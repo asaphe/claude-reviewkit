@@ -1,0 +1,14 @@
+{
+  "name": "claude-reviewkit",
+  "description": "Portable, evidence-based PR review for any repo.",
+  "owner": {
+    "name": "asaphe"
+  },
+  "plugins": [
+    {
+      "name": "reviewkit",
+      "source": "./",
+      "description": "Portable, evidence-based PR review for any repo — two-pass scan/verify, calibrated severity, mandatory adversarial pass."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+# OS
+.DS_Store
+
+# Editor
+.vscode/
+.idea/
+
+# Claude Code local settings (per-machine permissions)
+.claude/settings.local.json
