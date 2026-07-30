@@ -112,7 +112,7 @@ RESULT="$(jq -n \
     | (($x.__typename // "User") == "Bot")
     or (($x.login // "") | endswith("[bot]"));
   def who(b): if b then "[bot]  " else "[human]" end;
-  def snip(s): ((s // "") | gsub("\s+";" ")
+  def snip(s): ((s // "") | gsub("\\s+";" ")
                 | if (length > 200) then (.[0:197] + "...") else . end);
 
   ($threads | map({
