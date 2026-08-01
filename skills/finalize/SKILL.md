@@ -44,7 +44,15 @@ Squash protocol:
 7. Commit with one conventional message (`type(scope): description`, describing what and why, not the journey).
 8. Verify after: `git diff <branch>-backup HEAD` must be empty (byte-identical tree), and `git diff origin/main...HEAD --name-only` must equal `$INTENDED`. Either failure → do not push, `git reset --hard <branch>-backup`, report the unexpected diff.
 9. Push: `git push --force-with-lease="<branch>:$LEASE_SHA" origin <branch>` — pin the lease to the SHA captured in step 2. Never plain `--force`.
-10. Delete the backup branch after verifying the push landed.
+10. Verify the push landed before cleaning up: `git ls-remote origin <branch>` must equal local `HEAD`. Never infer success from the command's own output — a rejected push still prints to the remote's URL, and a trailing `&& echo pushed` in a compound command reports success the push never had.
+11. Delete the backup branch only after that check passes.
+
+If the push is rejected, **stop — do not escalate to `--force`.** The lease already permits the rewrite, so a rejection means something other than staleness refused it, and forcing past an unknown refusal on a shared branch is precisely what the lease exists to prevent. Distinguish the two cases:
+
+- **`stale info` / lease mismatch** — someone else pushed. Re-fetch, rebase onto the new tip, and restart the protocol from step 2. Never re-run with a refreshed lease without first reading what landed.
+- **`non-fast-forward` while the lease SHA still matches the remote** — the client was willing (confirm with `git push --dry-run`, which reports `forced update`) and the remote refused anyway. Check for a ruleset carrying `non_fast_forward` (`gh api repos/{owner}/{repo}/rules/branches/{branch}`), a `pre-receive` hook, or org-inherited rules (`?includes_parents=true`). If nothing explains it, **abandon the squash** — restore with `git reset --hard <branch>-backup`, confirm local now equals the remote, and report the anomaly. A tidy history is not worth an unexplained divergence between local and remote.
+
+Squashing is a convenience, not a merge requirement. A branch that keeps two honest commits is a fine outcome; a branch whose local and remote disagree is not.
 
 Only ask the user when commit grouping is genuinely ambiguous (5+ commits spanning mixed concerns). This squash runs without an interactive prompt on your own PR — the compensating controls (backup branch, pre-commit scope gate, post-commit byte-identity check, SHA-pinned lease) replace the human gate. Force-pushing a branch whose PR isn't yours still requires asking first.
 
