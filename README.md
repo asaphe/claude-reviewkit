@@ -21,7 +21,7 @@ Evidence-based PR review — findings that must survive an independent verificat
 ## Reviewer personas
 
 - **`security-lens`** — supply chain / dependency-audit gaps, CI script injection, cross-language application security (SQL/command injection, SSRF, path traversal, insecure deserialization, hardcoded credentials), auth/authz gaps, and secret/redaction-specific concerns (test-fixture credential scanning, boundary-condition coverage in pattern-matching logic).
-- **`systemic-patterns-lens`** — 8 language-agnostic bug shapes that look idiomatic at a glance: shell stream redirection order, the same risky pattern repeated across files, division-by-zero on unguarded input, null-unsafe datetime parsing, producer/consumer regex mismatch, idempotency gaps, `sys.exit(string)`-family traps, and redundant work in hot paths.
+- **`systemic-patterns-lens`** — 10 language-agnostic bug shapes that look idiomatic at a glance: shell stream redirection order, the same risky pattern repeated across files, division-by-zero on unguarded input, null-unsafe datetime parsing, producer/consumer regex mismatch, idempotency gaps, `sys.exit(string)`-family traps, redundant work in hot paths, a test-coverage gap on a file whose tested siblings handle similarly risky data, and handler output written to a channel the host discards.
 
 Both run on every review, always in parallel, each independently verifying its own findings before either is trusted.
 

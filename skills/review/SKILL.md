@@ -4,7 +4,7 @@ description: >-
   Two-pass evidence-based PR review. Dispatches security-lens and
   systemic-patterns-lens on every PR. Usage - /reviewkit:review [PR#]
 user-invocable: true
-allowed-tools: Agent, Bash(git *), Bash(gh *), Bash(jq *), Read, Glob, Grep, Write, AskUserQuestion
+allowed-tools: Agent, Bash(git *), Bash(gh *), Bash(jq *), Read, Glob, Grep, AskUserQuestion
 argument-hint: "[PR-number]"
 ---
 

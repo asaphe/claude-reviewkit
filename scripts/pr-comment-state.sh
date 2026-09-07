@@ -112,7 +112,9 @@ RESULT="$(jq -n \
     | (($x.__typename // "User") == "Bot")
     or (($x.login // "") | endswith("[bot]"));
   def who(b): if b then "[bot]  " else "[human]" end;
-  def snip(s): ((s // "") | gsub("\\s+";" ")
+  # Comment bodies are attacker-authored: bidi and zero-width forms reorder an agent-read render.
+  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}";" ") | gsub("[\u2028\u2029]";" "));
+  def snip(s): (scrub(s) | gsub("  +";" ")
                 | if (length > 200) then (.[0:197] + "...") else . end);
 
   ($threads | map({
@@ -132,7 +134,7 @@ RESULT="$(jq -n \
      isBot: isbot(.author // {}),
      state, isMinimized, body: (.body // ""), url
    }
-   | .has_content = ((.body | gsub("\\s";"") | length) > 0)
+   | .has_content = ((.body | scrub(.) | gsub("\\s";"") | length) > 0)
    | .actionable = ((.state == "CHANGES_REQUESTED")
                     or (.state == "COMMENTED" and .has_content and (.isMinimized == false)))
    | .needs_minimize = ((.actionable | not) and (.state == "DISMISSED")
