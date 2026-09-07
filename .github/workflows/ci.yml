@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  # No base-branch filter: a stacked PR targets its parent branch and still needs CI.
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@53b83947a5a98c8d113130e565377fae1a50d02f # v6.3.0
+        with:
+          node-version: '22'
+
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      # "source": "./" makes this repo its own plugin, so one call covers both manifests; --strict also fails unrecognized fields.
+      - name: Validate manifests
+        run: claude plugin validate . --strict
+
+      - name: Shell syntax check
+        run: |
+          set -euo pipefail
+          find scripts -name '*.sh' -print0 | xargs -0 -n1 bash -n
+
+      - name: Shellcheck
+        run: |
+          set -euo pipefail
+          find scripts -name '*.sh' -print0 | xargs -0 -n1 shellcheck -x
+
+      - name: JSON syntax check
+        run: |
+          set -euo pipefail
+          find . -name '*.json' -not -path './node_modules/*' -not -path './.git/*' -print0 \
+            | xargs -0 -n1 python3 -c 'import json,sys; json.load(open(sys.argv[1]))'
+
+      # The sweep is the only executable surface here, and its jq program is where the untrusted-input handling lives.
+      - name: Sweep contract tests
+        run: ./scripts/pr-comment-state.test.sh
+
+      # Relative links only: a network checker fails on rate limits rather than on repo defects.
+      - name: Relative link check
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import pathlib, re, sys
+          root = pathlib.Path('.')
+          bad = []
+          for md in root.rglob('*.md'):
+              if '.git' in md.parts:
+                  continue
+              for target in re.findall(r'\]\(([^)]+)\)', md.read_text(encoding='utf-8')):
+                  link = target.split('#', 1)[0].strip()
+                  if not link or '://' in link or link.startswith('mailto:'):
+                      continue
+                  if not (md.parent / link).resolve().exists():
+                      bad.append(f'{md}: {link}')
+          if bad:
+              print('broken relative links:', *bad, sep='\n  ')
+              sys.exit(1)
+          print('relative links OK')
+          PY

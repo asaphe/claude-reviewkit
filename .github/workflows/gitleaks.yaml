@@ -1,0 +1,37 @@
+name: Gitleaks
+
+on:
+  # No base-branch filter: a stacked PR targets its parent branch and still needs CI.
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      # Full history: gitleaks scans past commits, not just the diff.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      # No GITLEAKS_LICENSE: v3 requires one only for organization-owned repos.
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Defaults to true; commenting needs pull-requests: write, so findings go to the summary instead.
+          GITLEAKS_ENABLE_COMMENTS: false
+          GITLEAKS_ENABLE_SUMMARY: true
+          GITLEAKS_VERSION: "8.21.2"
+          GITLEAKS_CONFIG: .gitleaks.toml

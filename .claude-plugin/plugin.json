@@ -1,8 +1,11 @@
 {
   "name": "reviewkit",
   "description": "Portable, evidence-based PR review for any repo — two-pass scan/verify, calibrated severity, mandatory adversarial pass.",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "author": {
     "name": "asaphe"
-  }
+  },
+  "homepage": "https://github.com/asaphe/claude-reviewkit",
+  "repository": "https://github.com/asaphe/claude-reviewkit",
+  "license": "MIT"
 }

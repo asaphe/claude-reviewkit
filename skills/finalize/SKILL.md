@@ -27,7 +27,14 @@ gh pr view --json number,title,body,headRefName --jq '{number, title, body, bran
 
 - `git fetch origin main`, then `git diff origin/main...HEAD --stat` for the full changed-file list (use `origin/main`, not local `main`, which can lag).
 - Read the PR's current body.
-- Check CI status: `gh pr checks "$PR_NUMBER" --json name,state,conclusion`. Flag any failed/pending checks but continue — this skill doesn't fix CI.
+- Check CI status via the check-runs rollup, not `gh pr checks` — that command renders only the checks that have *reported*, so a job still queued is absent from the table rather than listed as pending, and a partial run reads as a complete green one:
+
+  ```bash
+  gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup \
+    --jq '.statusCheckRollup[] | "\(.name // .context): \(.status // "COMPLETED")/\(if (.conclusion // .state // "") == "" then "PENDING" else (.conclusion // .state) end)"'
+  ```
+
+  Classify every row into one of six buckets — success, failure, cancelled, skipped, pending, and *not reported at all* — and confirm each required context by name against branch protection (`gh api "repos/$REPO/branches/main/protection" --jq '.required_status_checks.contexts[]'`). A required context missing from the rollup is pending, never passing. Flag failures and pending checks but continue — this skill doesn't fix CI.
 
 ### 2. Clean git history
 
