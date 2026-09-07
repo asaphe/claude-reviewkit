@@ -14,6 +14,19 @@ Two-pass evidence-based PR review: scan for potential findings, then independent
 
 ## Steps
 
+### 0. Authorship gate (before anything else)
+
+Resolve who wrote the PR before fetching a diff, dispatching an agent, or forming any opinion — the answer changes what this skill is allowed to do.
+
+```bash
+gh pr view "$PR_NUMBER" --repo "$REPO" --json author,headRefName -q '.author.login'
+```
+
+- **Someone else's PR** — you are a reviewer. Never push to the branch, never edit its files, never force-push, and never merge. Findings are reported; fixes are the author's.
+- **Your own PR** — you are self-reviewing. The adversarial pass matters more, not less, because no second reader is coming. Say so in the output rather than presenting a self-review as an independent one.
+
+Commit authorship is not PR ownership: a PR opened by you can carry someone else's commits, and a PR opened by someone else can carry yours. Resolve on the PR's author field, and check the commit authors separately before any history rewrite.
+
 ### 1. Resolve PR number
 
 If `$ARGUMENTS` contains a PR number, use it. Otherwise resolve from the current branch:
@@ -103,13 +116,34 @@ verification, and keep it with an Evidence block or drop it with reasoning.
 
 ## Severity Classification
 
-| Severity | Meaning | When to use |
-| --- | --- | --- |
-| **BLOCKING** | Must fix before merge | Bugs, security issues, data loss, broken contracts |
-| **ISSUE** | Real problem, not merge-blocking | Silent failures, fragile patterns, error-handling gaps |
-| **SUGGESTION** | Nice to have | Style, minor hardening, cold-path redundancy |
+Grade a finding by what kind of thing it is, not by how much attention you want it to get. Six grades decide what a finding *is*:
 
-The test for ISSUE vs. SUGGESTION: would you file a bug for it? If yes, it's at least an ISSUE.
+| Grade | Meaning |
+| --- | --- |
+| **BLOCKING** | Breaks correctness or security if merged |
+| **ISSUE** | A real defect in what the change does or leaves behind |
+| **GAP** | Not a defect in the diff — work the change implies but did not do (one of N call sites migrated, a parallel map not extended). Reads *incomplete*, not *wrong* |
+| **WARNING** | Nothing to fix; an operational consequence the reader must act on — a manual deploy someone owns, a merge-order constraint, a follow-up in another repo |
+| **SUGGESTION** | Optional improvement, wholly the author's call |
+| **NIT** | Cosmetic, style, or convention, with no functional effect |
+
+Inflating a by-design operational step to ISSUE and deflating missing work to NIT are the same error in opposite directions — both substitute a volume knob for a category.
+
+- **GAP is the grade most often lost.** Without it, missing work falls to NIT, reads as cosmetic, and gets skipped. If a call site, environment, or consumer is left half-wired, it is a GAP even when every line in the diff is correct.
+- **NIT is reserved for genuinely cosmetic findings.** If a reader acting on it would change system behaviour, it was never a NIT.
+- **Before posting BLOCKING, name what breaks on merge alone.** With nobody taking any other action, what is wrong the moment this lands? If the answer needs someone to also deploy, migrate, or run something, the merge is inert and the grade is WARNING. Conceding correctness inside a blocking finding — "that is by design", "nothing to change here" — says not-a-defect and blocks in the same breath; grep the draft for that shape.
+
+**These six are an internal instrument; the posted artifact carries three.** Map before posting:
+
+| Internal grade | Posts as |
+| --- | --- |
+| BLOCKING | BLOCKING |
+| ISSUE, GAP | ISSUE |
+| WARNING, SUGGESTION, NIT | SUGGESTION |
+
+A WARNING posts as SUGGESTION but leads with the action and its owner. Never invent a fourth posted severity — a `[WARNING]` prefix or a "1 GAP" line in a summary count is the internal taxonomy escaping its container, and it renders nowhere the reader has a category for.
+
+**The map binds on corrections too, and that is where it gets dropped.** A regraded finding re-enters the map: the posted artifact shows only the newly-mapped severity, never the grade name and never the regrade history. "Regraded from BLOCKING", "originally graded X", "_Edited: that was wrong_" tell the author about your revision process, which they have no model of and cannot act on. Correct the artifact instead (clean replacement text or delete-and-repost, counts updated) and state the withdrawal in the report to the user.
 
 ## Default-Skeptical Disposition
 
@@ -138,6 +172,18 @@ After both agents return:
 
 Before presenting: for each finding, ask "would I bet my credibility on this?" — if not, drop or downgrade. For the absence of findings, ask "what did I miss?" — simulate real input, first-time-user confusion, and edge cases (empty values, first-run vs. re-run).
 
+Do the full adversarial read **once, before** the first "clean" or "no outstanding comments" declaration. A sequence of single-finding rounds, each fixed reactively, is not a substitute: it surfaces only what that round's scan happened to catch, at the cost of a full round-trip per finding.
+
+### 6a. Author pushback is not evidence
+
+When the author disputes a finding, the reply is a claim from an interested party, not a verification. Re-run the original check before conceding, and say which of these happened:
+
+- **The check still shows the defect** → the finding stands; restate the evidence rather than softening the grade.
+- **The check now passes because the author pushed a fix** → confirm against the new HEAD SHA, not the SHA you reviewed, and close it as addressed.
+- **The check was wrong** → withdraw it explicitly and say what you got wrong.
+
+Withdrawing a finding because the author sounded confident, without re-running anything, is the failure this step exists to prevent. A finding downgraded with no new evidence is a finding you never verified in the first place.
+
 ### 7. Present findings
 
 ```text
@@ -165,7 +211,21 @@ Ask the user: "Post these findings to the PR? You can remove or edit items first
 
 - Get the latest commit SHA: `gh pr view "$PR_NUMBER" --repo "$REPO" --json commits --jq '.commits[-1].oid'`
 - Post each finding as an inline comment via `gh api POST /repos/{owner}/{repo}/pulls/{number}/comments` using `path`, `line`, `body`, `commit_id`, `side: "RIGHT"` — never the `position` parameter, which counts from the diff hunk and easily lands on removed code.
-- `event` = `REQUEST_CHANGES` if any BLOCKING findings exist, else `COMMENT`.
+**Choosing the review state — it is a merge authorization, not a tone.**
+
+A forge offers exactly three: `APPROVE`, `COMMENT`, `REQUEST_CHANGES`. "Approve with comments" is not one of them, and mapping it to APPROVE-plus-a-body is how a review that wants changes ends up clearing the gate.
+
+- If anything in the review is a thing you want done → `REQUEST_CHANGES`, or `COMMENT` where the point is informational but you still don't want to authorize merge.
+- `APPROVE` means you would accept it merging exactly as-is, with every comment either FYI or wholly the author's discretion. That is the only legitimate "approve with comments".
+- **The tell is self-contradiction in your own prose.** "I'd like this fixed before merge" or "worth fixing first" inside an APPROVE says merge and don't-merge in the same breath. Re-read the draft for that shape before submitting.
+
+Three rationalizations produce a wrong approval, and all three are rejected:
+
+1. *"Another reviewer already blocks it, so my approval is costless."* That reviews the situation, not the change — their block can be dismissed without your finding ever being revisited.
+2. *"Blocking is disproportionate for a small or docs-only change."* Proportionality governs how much you write, never which state you pick.
+3. *"That file is another team's surface, so my approval doesn't really cover it."* Approval is repo-wide, not per-file. Not owning the file argues for COMMENT, never for APPROVE-with-a-caveat.
+
+Authors act on the state. The prose is what they read *after* the state already told them it was fine.
 
 ### 9. Resolve/minimize existing state (second pass)
 

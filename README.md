@@ -25,6 +25,12 @@ Evidence-based PR review — findings that must survive an independent verificat
 
 Both run on every review, always in parallel, each independently verifying its own findings before either is trusted.
 
+## Review state and finding grades
+
+The review state is a merge authorization, not a tone. `APPROVE` means you would accept the change merging exactly as-is; anything you want done is `REQUEST_CHANGES`, or `COMMENT` where the point is informational. "Approve with comments" is not a forge state, and mapping it to approve-plus-a-body is how a review that wants changes clears the gate.
+
+Findings are graded on six internal categories — BLOCKING, ISSUE, GAP, WARNING, SUGGESTION, NIT — and posted as three. `GAP` (work the change implies but did not do) and `WARNING` (an operational consequence with nothing to fix) exist because without them, missing work falls to NIT, reads as cosmetic, and gets skipped.
+
 ## Optional: `intent-router` integration
 
 If you already have an `intent-router`-style plugin installed that supports configurable skill routing, you can point it at this plugin's skills instead of leaving it to guess. For example, add to `~/.claude/intent-router.config.json`:

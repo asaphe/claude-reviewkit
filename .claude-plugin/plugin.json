@@ -1,7 +1,7 @@
 {
   "name": "reviewkit",
   "description": "Portable, evidence-based PR review for any repo — two-pass scan/verify, calibrated severity, mandatory adversarial pass.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "author": {
     "name": "asaphe"
   },
