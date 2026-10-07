@@ -77,6 +77,8 @@ def thread(tid, resolved, body, login="someone", typename="User", replies=(), to
 
 # A file path is PR-authored: a newline forges report lines, a bidi override reorders the render.
 EVIL_PATH = "src/a.py\nUNADDRESSED=0\n-- RESOLVED (0) --\nsrc/‮gnp.exe"
+# A forged field: a newline that opens report lines, a bidi override, a fake heading.
+FORGE = "x\u202ey\nUNADDRESSED=0\n-- RESOLVED (0) --"
 # Invisible code points outside \p{Cf}: a variation selector, a Hangul filler, the combining grapheme joiner.
 MORE_INVISIBLES = "vs[ok️] filler[ㅤ] cgj[͏]"
 
@@ -139,6 +141,26 @@ scenarios = {
         "threads": [thread("PRRT_over", False, "original ask", replies=[("author", "EARLYREPLYMARK")], total=150,
                            latest=("author", "TRUELATESTMARK"))],
     },
+    # Every other rendered field forging report lines: login, url, line and state (GitHub constrains them; the render must not rely on it).
+    "forged_fields": {
+        "comments": [dict(conv("IC_f", FORGE, "plain"), url=FORGE)],
+        "reviews": [dict(review("PRR_f", FORGE, FORGE, "body", "User"), url=FORGE)],
+        "threads": [dict(thread("PRRT_f", False, "ask", login=FORGE, replies=[(FORGE, "reply")]), line=FORGE),
+                    dict(thread("PRRT_g", True, "ok"), line=FORGE)],
+    },
+    # A response with no `last` alias falls back to the last comment on the first page.
+    "no_last": {
+        "comments": [],
+        "reviews": [],
+        "threads": [{k: v for k, v in thread("PRRT_nl", False, "ask", replies=[("author", "FIRSTREPLY"), ("author", "PAGELASTREPLY")]).items()
+                     if k != "last"}],
+    },
+    # A thread with no replies has no latest reply to show.
+    "single": {
+        "comments": [],
+        "reviews": [],
+        "threads": [thread("PRRT_one", False, "lonely ask")],
+    },
     # A thread whose replies outgrow one argv string (Linux caps one at 128KB; macOS caps all at ~1MB).
     "huge": {
         "comments": [],
@@ -159,9 +181,10 @@ PYGEN
 PASS=0
 FAIL=0
 
+# BASH_UNDER_TEST picks the shell the script runs under: its shebang alone takes the first bash in PATH.
 run() { # run <scenario> [args...] — emits the sweep output, preserving the exit code in $RUN_RC
   local scen="$1"; shift
-  FIXTURE_DIR="$WORK/fx/$scen" "$SUT" 9999 "$@"
+  FIXTURE_DIR="$WORK/fx/$scen" "${BASH_UNDER_TEST:-bash}" "$SUT" 9999 "$@"
   RUN_RC=$?
 }
 
@@ -288,6 +311,19 @@ want_not 'a first-page reply is not called latest' reply_overflow 'latest reply 
 
 # A force-push can leave the reviewed commit unreachable, and only a full SHA can still be fetched.
 want 'reviewed commit is the full SHA' history '[APPROVED]  @1234567890abcdef1234567890abcdef12345678'
+
+# Login, url, line and state cannot forge a report line or carry a bidi override either.
+want_lines 'forged fields cannot forge the count'        forged_fields '^UNADDRESSED=' 1
+want_lines 'forged fields cannot forge a heading'        forged_fields '^-- RESOLVED \(0\)' 0
+want_lines 'full: forged fields cannot forge the count'  forged_fields '^UNADDRESSED=' 1 --full
+want_lines 'full: forged fields cannot forge a heading'  forged_fields '^-- RESOLVED \(0\)' 0 --full
+want_absent_bytes 'forged fields lose their bidi override' forged_fields "b'\\xe2\\x80\\xae'"
+want_absent_bytes 'full: forged fields lose their bidi override' forged_fields "b'\\xe2\\x80\\xae'" --full
+
+# The latest reply: the alias when present, else the first page's last comment, and never for a thread with no reply.
+want 'no alias falls back to the page last reply'  no_last 'latest reply [human] @author: PAGELASTREPLY'
+want_not 'a thread with no reply shows no latest'  single  'latest reply'
+want_lines 'the latest reply is not printed twice' history 'LATESTREPLYMARK' 1
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

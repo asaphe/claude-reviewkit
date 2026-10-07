@@ -13,10 +13,10 @@ Read-only sweep of every place PR feedback lives, fully paginated:
 
 The default report truncates bodies and lists closed items by ID only.
   --full  also prints every item in every bucket — resolved, outdated, dismissed
-          and minimized included — with its whole body and every reply (up to 100
-          per thread; the output names any it did not fetch), so a
-          re-review can judge claims it would otherwise see only as a snippet.
-          Bodies stay scrubbed; each body line is prefixed with "|".
+          and minimized included — with its whole body and every reply (a
+          thread's first 100 comments; the output names any it did not fetch),
+          so a re-review can judge claims it would otherwise see only as a
+          snippet. Every field stays scrubbed; each body line is prefixed with "|".
 
 Repo: $GH_REPO (owner/name) if set, else `gh repo view`.
 Fails loud on any API error — never prints "none" on a failed query.
@@ -148,23 +148,23 @@ RESULT="$(jq -n \
      tid: .id,
      cid: ((.comments.nodes[0].id) // ""),
      isResolved, isOutdated,
-     path: scrub(.path), line: (.line // "?"),
+     path: scrub(.path), line: scrub(.line // "?" | tostring),
      total: (.comments.totalCount // 0),
-     author: ((.comments.nodes[0].author.login) // "unknown"),
+     author: scrub((.comments.nodes[0].author.login) // "unknown"),
      isBot: isbot(.comments.nodes[0].author // {}),
      body: ((.comments.nodes[0].body) // ""),
-     url: ((.comments.nodes[0].url) // ""),
+     url: scrub(.comments.nodes[0].url),
      replies: ((.comments.nodes // [])[1:] | map({
-       author: ((.author.login) // "unknown"), isBot: isbot(.author // {}), body: (.body // "") })),
+       author: scrub((.author.login) // "unknown"), isBot: isbot(.author // {}), body: (.body // "") })),
      fetched: ((.comments.nodes // []) | length),
      # The true last comment of the thread: past 100 replies, the first page ends before it.
      latest: (.last.nodes[0] // (.comments.nodes // [])[-1] // null)
    })) as $T |
   ($reviews[0] | map({
      rid: .id,
-     author: ((.author.login) // "unknown"),
+     author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
-     state, isMinimized, body: (.body // ""), url, commit: (.commit // {})
+     state: scrub(.state), isMinimized, body: (.body // ""), url: scrub(.url), commit: (.commit // {})
    }
    | .has_content = ((.body | scrub(.) | gsub("\\s";"") | length) > 0)
    | .actionable = ((.state == "CHANGES_REQUESTED")
@@ -173,9 +173,9 @@ RESULT="$(jq -n \
                         and .has_content and (.isMinimized == false)))) as $R |
   ($conv[0] | map({
      cid: .id,
-     author: ((.author.login) // "unknown"),
+     author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
-     body: (.body // ""), url, isMinimized
+     body: (.body // ""), url: scrub(.url), isMinimized
    })) as $C |
 
   ($T | map(select(.isResolved | not)))                            as $unresolved |
@@ -196,7 +196,7 @@ RESULT="$(jq -n \
    ]
    + ( if ($unresolved|length)==0 then ["  (none)"]
        else ($unresolved | map(
-         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\(if .total>1 and .latest != null then (.latest | "\n      latest reply \(who(isbot(.author // {}))) @\((.author.login) // "unknown"): \(snip(.body))") else "" end)\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
+         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\(if .total>1 and .latest != null then (.latest | "\n      latest reply \(who(isbot(.author // {}))) @\(scrub((.author.login) // "unknown")): \(snip(.body))") else "" end)\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
        end )
    + [ "" , "-- RESOLVED-OUTDATED (\($resOutdated|length)) --" ]
    + ( if ($resOutdated|length)==0 then ["  (none)"]
