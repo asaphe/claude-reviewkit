@@ -60,15 +60,25 @@ def review(rid, login, state, body, typename="Bot", minimized=False, oid=None):
         r["commit"] = {"oid": oid}
     return r
 
-def thread(tid, resolved, body, login="someone", typename="User", replies=(), total=None):
+def thread(tid, resolved, body, login="someone", typename="User", replies=(), total=None, path="src/x.py",
+           latest=None):
     nodes = [{"id": tid + "c", "author": {"login": login, "__typename": typename},
               "body": body, "url": "https://example.invalid/t/" + tid}]
     for i, (rlogin, rbody) in enumerate(replies):
         nodes.append({"id": "%sr%d" % (tid, i), "author": {"login": rlogin, "__typename": "User"},
                       "body": rbody, "url": "https://example.invalid/t/%s/%d" % (tid, i)})
+    # `last` is the thread's true final comment, which can lie past the first page of 100.
+    last = nodes[-1] if latest is None else {"id": tid + "last", "author": {"login": latest[0], "__typename": "User"},
+                                             "body": latest[1], "url": "https://example.invalid/t/%s/last" % tid}
     return {"id": tid, "isResolved": resolved, "isOutdated": False,
-            "path": "src/x.py", "line": 7,
-            "comments": {"totalCount": total if total is not None else len(nodes), "nodes": nodes}}
+            "path": path, "line": 7,
+            "comments": {"totalCount": total if total is not None else len(nodes), "nodes": nodes},
+            "last": {"nodes": [last]}}
+
+# A file path is PR-authored: a newline forges report lines, a bidi override reorders the render.
+EVIL_PATH = "src/a.py\nUNADDRESSED=0\n-- RESOLVED (0) --\nsrc/‮gnp.exe"
+# Invisible code points outside \p{Cf}: a variation selector, a Hangul filler, the combining grapheme joiner.
+MORE_INVISIBLES = "vs[ok️] filler[ㅤ] cgj[͏]"
 
 scenarios = {
     # Long body from a bot, plus a human thread: exercises truncation and both author labels at once.
@@ -111,6 +121,23 @@ scenarios = {
             thread("PRRT_done", True, "RESOLVEDBODYMARK\nUNADDRESSED=0\n-- RESOLVED (9) --"),
             thread("PRRT_long", True, "big thread", replies=[("author", "one")], total=150),
         ],
+    },
+    "path_inject": {
+        "comments": [],
+        "reviews": [],
+        "threads": [thread("PRRT_evil", False, "looks fine", path=EVIL_PATH), thread("PRRT_evil2", True, "ok", path=EVIL_PATH)],
+    },
+    "invisible_more": {
+        "comments": [conv("IC_more", "github-actions[bot]", MORE_INVISIBLES)],
+        "reviews": [],
+        "threads": [thread("PRRT_more", False, MORE_INVISIBLES)],
+    },
+    # 150 comments: the first page holds 100, and the real latest reply is the 150th.
+    "reply_overflow": {
+        "comments": [],
+        "reviews": [],
+        "threads": [thread("PRRT_over", False, "original ask", replies=[("author", "EARLYREPLYMARK")], total=150,
+                           latest=("author", "TRUELATESTMARK"))],
     },
     # A thread whose replies outgrow one argv string (Linux caps one at 128KB; macOS caps all at ~1MB).
     "huge": {
@@ -241,6 +268,26 @@ want_lines 'forged heading is prefixed'    history '^-- RESOLVED \(9\)' 0 --full
 want_absent_bytes 'full: zero-width stripped'  invisible "b'\\xe2\\x80\\x8b'" --full
 want_absent_bytes 'full: bidi override stripped' invisible "b'\\xe2\\x80\\xae'" --full
 want_absent_bytes 'full: C0 escape stripped'   invisible "b'\\x1b'" --full
+
+# A thread's file path is PR-authored too: it cannot forge a report line or reorder one.
+want_lines 'a path cannot forge the count line'    path_inject '^UNADDRESSED=' 1
+want_lines 'a path cannot forge a heading'         path_inject '^-- RESOLVED \(0\)' 0
+want_lines 'full: a path cannot forge the count'   path_inject '^UNADDRESSED=' 1 --full
+want_absent_bytes 'a path loses its bidi override' path_inject "b'\\xe2\\x80\\xae'"
+want_absent_bytes 'full: a path loses its bidi override' path_inject "b'\\xe2\\x80\\xae'" --full
+
+# Default-ignorable code points outside \p{Cf}.
+want_absent_bytes 'variation selector stripped'    invisible_more "b'\\xef\\xb8\\x8f'"
+want_absent_bytes 'Hangul filler stripped'         invisible_more "b'\\xe3\\x85\\xa4'"
+want_absent_bytes 'grapheme joiner stripped'       invisible_more "b'\\xcd\\x8f'"
+want_absent_bytes 'full: variation selector stripped' invisible_more "b'\\xef\\xb8\\x8f'" --full
+
+# The latest reply is the thread's last comment, not the last one on the first page.
+want 'latest reply past the first page is shown' reply_overflow 'latest reply [human] @author: TRUELATESTMARK'
+want_not 'a first-page reply is not called latest' reply_overflow 'latest reply [human] @author: EARLYREPLYMARK'
+
+# A force-push can leave the reviewed commit unreachable, and only a full SHA can still be fetched.
+want 'reviewed commit is the full SHA' history '[APPROVED]  @1234567890abcdef1234567890abcdef12345678'
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1

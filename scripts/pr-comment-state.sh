@@ -53,6 +53,12 @@ fi
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
 
+# A jq failure is an unexpected response shape, never a count; without this it exits 5, outside the documented codes.
+jq_fail() {
+  echo "ERROR: could not evaluate $1 for PR #$PR_NUMBER in $REPO — unexpected response shape." >&2
+  exit 1
+}
+
 # fetch_bucket <connection> <query> — paginates, fails loud on GraphQL errors / missing PR, emits the nodes array.
 fetch_bucket() {
   local conn="$1" query="$2" raw
@@ -81,6 +87,7 @@ THREADS_Q='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
         nodes{
           id isResolved isOutdated path line
           comments(first:100){ totalCount nodes{ id author{login __typename} body url } }
+          last: comments(last:1){ nodes{ author{login __typename} body } }
         }
       }
     }
@@ -129,18 +136,19 @@ RESULT="$(jq -n \
     or (($x.login // "") | endswith("[bot]"));
   def who(b): if b then "[bot]  " else "[human]" end;
   # Comment bodies are attacker-authored: bidi and zero-width forms reorder an agent-read render.
-  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}";" ") | gsub("[\u2028\u2029]";" "));
+  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[\u2028\u2029]";" "));
   def snip(s): (scrub(s) | gsub("  +";" ")
                 | if (length > 200) then (.[0:197] + "...") else . end);
   # Full bodies keep their line breaks; the prefix stops a body line passing for a report line.
   def block(s): ((s // "") | gsub("\r\n?";"\n") | split("\n") | map("      | " + scrub(.)) | join("\n"));
-  def sha(c): if (c.oid // "") == "" then "" else "  @\(c.oid[0:7])" end;
+  # The full SHA: after a force-push only a full one can still be fetched from the PR ref.
+  def sha(c): if (c.oid // "") == "" then "" else "  @\(c.oid)" end;
 
   ($threads[0] | map({
      tid: .id,
      cid: ((.comments.nodes[0].id) // ""),
      isResolved, isOutdated,
-     path, line: (.line // "?"),
+     path: scrub(.path), line: (.line // "?"),
      total: (.comments.totalCount // 0),
      author: ((.comments.nodes[0].author.login) // "unknown"),
      isBot: isbot(.comments.nodes[0].author // {}),
@@ -148,7 +156,9 @@ RESULT="$(jq -n \
      url: ((.comments.nodes[0].url) // ""),
      replies: ((.comments.nodes // [])[1:] | map({
        author: ((.author.login) // "unknown"), isBot: isbot(.author // {}), body: (.body // "") })),
-     fetched: ((.comments.nodes // []) | length)
+     fetched: ((.comments.nodes // []) | length),
+     # The true last comment of the thread: past 100 replies, the first page ends before it.
+     latest: (.last.nodes[0] // (.comments.nodes // [])[-1] // null)
    })) as $T |
   ($reviews[0] | map({
      rid: .id,
@@ -186,7 +196,7 @@ RESULT="$(jq -n \
    ]
    + ( if ($unresolved|length)==0 then ["  (none)"]
        else ($unresolved | map(
-         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\(if (.replies|length)>0 then (.replies[-1] | "\n      latest reply \(who(.isBot)) @\(.author): \(snip(.body))") else "" end)\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
+         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\(if .total>1 and .latest != null then (.latest | "\n      latest reply \(who(isbot(.author // {}))) @\((.author.login) // "unknown"): \(snip(.body))") else "" end)\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
        end )
    + [ "" , "-- RESOLVED-OUTDATED (\($resOutdated|length)) --" ]
    + ( if ($resOutdated|length)==0 then ["  (none)"]
@@ -239,9 +249,9 @@ RESULT="$(jq -n \
     actionable_reviews: ($actReviews|length),
     needs_minimize_reviews: ($needsMinReviews|length),
     conversation_comments: ($C|length) }
-')"
+')" || jq_fail "the sweep"
 
-UNADDRESSED="$(jq -r '.unaddressed' <<<"$RESULT")"
+UNADDRESSED="$(jq -r '.unaddressed' <<<"$RESULT")" || jq_fail "the count"
 jq -r '.report' <<<"$RESULT"
 echo ""
 echo "UNADDRESSED=$UNADDRESSED"

@@ -71,21 +71,21 @@ Then compact the inventory into a **prior review context** block for the reviewe
 "${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER" --head "$(git rev-parse HEAD)"
 ```
 
-The script reads every check run and commit status in the head's `statusCheckRollup` (`gh` paginates it). It compares them against the base branch's required contexts, taken from both rulesets and classic branch protection, and ends with `CI_VERDICT=` and `REASON=` lines. Show the raw output; don't restate it as a verdict of your own.
+The script reads every check run and commit status in the head's `statusCheckRollup` (`gh` paginates it). It compares them against the base branch's required contexts, taken from both rulesets and classic branch protection, and ends with `CI_VERDICT=` and `REASON=` lines. A re-run supersedes the failed attempt before it, and a required context pinned to an app counts only when that app reported it. Show the raw output; don't restate it as a verdict of your own.
 
 - **GREEN** is the only result that lets the review say CI passed.
 - **RED** names the required check that failed.
-- **INCOMPLETE** names what is pending, required but not reported, or required but skipped or neutral. A skipped or neutral required check passes the merge gate without proving anything ran. A head that moved after checkout is INCOMPLETE too, because its checks belong to a commit nobody reviewed.
-- **RED-ADVISORY** means only non-required checks failed: it doesn't block the merge, and it still isn't green.
+- **INCOMPLETE** names what is pending, required but not reported, or required but skipped or neutral. A skipped or neutral required check passes the merge gate without proving anything ran, and so does a run where every check skipped. A head that moved after checkout is INCOMPLETE too, because its checks belong to a commit nobody reviewed. So is a base whose ruleset also requires workflows, code-scanning results or deployments: those gates name no status check, so the rollup cannot prove them — the merge box can.
+- **RED-ADVISORY** means only non-required checks failed and no such ruleset gate exists: it doesn't block the merge, and it still isn't green.
 
 Never derive green from an empty failure list, from `gh pr checks` (it lists only the checks that have reported), or from an earlier head. Exit `1`/`2` means no verdict: report CI as unverified. This skill doesn't fix CI; it reports the verdict in step 7.
 
 ### 3b. Re-review continuity
 
-A re-review is a review of a PR that already carries one of yours, or a review recorded earlier in this conversation. The sweep shows the commit each earlier review was submitted against (`@<sha7>`). On a re-review:
+A re-review is a review of a PR that already carries one of yours, or a review recorded earlier in this conversation. The sweep shows the full SHA of the commit each earlier review was submitted against (`@<sha>`). On a re-review:
 
 1. **Recover the prior state.** Find the head you last reviewed (`PRIOR`), the findings you raised there (its body and threads, from the `--full` sweep), and their dispositions.
-2. **Compute the correction diff.** Run `git diff "$PRIOR"..HEAD` (fetch `pull/$PR_NUMBER/head` first). If `PRIOR` is no longer reachable after a force-push, say so and run a full review instead; don't guess which parts changed.
+2. **Compute the correction diff.** Run `git diff "$PRIOR"..HEAD` (fetch `pull/$PR_NUMBER/head` first). After a force-push `PRIOR` is on no branch; try `git fetch origin "$PRIOR"`, which needs the full SHA. If it still can't be fetched, say so and run a full review instead; don't guess which parts changed.
 3. **Re-check every prior finding at the new head.** Re-run the check that produced it; the author's reply is not a substitute (step 6a). Give each finding exactly one status:
    - **fixed** — the check now passes, and a change in the correction diff explains why
    - **still open** — the check still shows the defect
