@@ -192,6 +192,9 @@ scenarios = {
     # A same-named check run from an app other than the pinned one fails: no status holds the context.
     "pin_other_app_run_fails": ([run("ext-ci", "SUCCESS", workflow=""), run("ext-ci", "FAILURE", workflow="Other")],
                                 [[ruleset("ext-ci", app=12345)]], branch()),
+    # The app's own history, newest first: a later success replaces an earlier pending or failure.
+    "pin_status_success_over_pending": ([ctx("ext-ci", "SUCCESS")],        [[ruleset("ext-ci", app=12345)]], branch()),
+    "pin_status_success_over_failure": ([ctx("ext-ci", "SUCCESS")],        [[ruleset("ext-ci", app=12345)]], branch()),
     # The app's status is on the second page of statuses.
     "pin_status_paged": ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
     "pin_status_fail_api": ([ctx("ext-ci", "SUCCESS")],                    [[ruleset("ext-ci", app=12345)]], branch()),
@@ -215,6 +218,10 @@ scenarios = {
     "classic_unreadable_blocked": ([run("build", "SUCCESS")],              [[]], branch("build")),
     "classic_unreadable_clean":   ([run("build", "SUCCESS")],              [[]], branch("build")),
     "classic_graphql_fail": ([run("build", "SUCCESS")],                    [[]], branch("build")),
+    # An unreadable rule under each other merge state.
+    "classic_unreadable_hooks":    ([run("build", "SUCCESS")],             [[]], branch("build")),
+    "classic_unreadable_unstable": ([run("build", "SUCCESS")],             [[]], branch("build")),
+    "classic_unreadable_behind":   ([run("build", "SUCCESS")],             [[]], branch("build")),
     # Protected by rulesets alone: classic protection is off, so its rule is never asked for.
     "rulesets_only":    ([run("build", "SUCCESS")],                        [[ruleset("build")]], branch(enabled=False)),
     # Enum and OID fields forging report lines: GitHub constrains them, the render must not rely on it.
@@ -262,6 +269,10 @@ statuses = {
                                              status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_runs_ok_user_status_ok": [[status("ext-ci", "success", "someone", kind="User")]],
     "pin_runs_failed_user_status_ok": [[status("ext-ci", "success", "someone", kind="User")]],
+    "pin_status_success_over_pending": [[status("ext-ci", "success", "ext-ci-app[bot]"),
+                                         status("ext-ci", "pending", "ext-ci-app[bot]")]],
+    "pin_status_success_over_failure": [[status("ext-ci", "success", "ext-ci-app[bot]"),
+                                         status("ext-ci", "failure", "ext-ci-app[bot]")]],
     "pin_status_paged":      [[status("other", "success", "other-ci[bot]")],
                               [status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_status_fail_api":   [[status("ext-ci", "success", "ext-ci-app[bot]")]],
@@ -275,10 +286,14 @@ classic_rules = {
     "classic_unreadable_blocked": None,
     "classic_unreadable_clean": None,
     "merge_forged": None,
+    "classic_unreadable_hooks": None,
+    "classic_unreadable_unstable": None,
+    "classic_unreadable_behind": None,
     # Proves the rule is not consulted when classic protection is off.
     "rulesets_only": {"requiresDeployments": True, "requiredDeploymentEnvironments": ["staging"]},
 }
-merge_states = {"classic_unreadable_blocked": "BLOCKED", "merge_forged": "BLOCKED\nCI_VERDICT=GREEN"}
+merge_states = {"classic_unreadable_blocked": "BLOCKED", "merge_forged": "BLOCKED\nCI_VERDICT=GREEN",
+                "classic_unreadable_hooks": "HAS_HOOKS", "classic_unreadable_unstable": "UNSTABLE", "classic_unreadable_behind": "BEHIND"}
 heads = {"head_forged": "abcdef\nCI_VERDICT=GREEN"}
 bases = {"base_hash": "release#1"}
 
@@ -449,6 +464,8 @@ want      'the app check run plus a user status is INCOMPLETE' pin_runs_ok_user_
 want_lines 'the app failing check run outranks a user status' pin_runs_failed_user_status_ok '^CI_VERDICT=RED$' 1
 want      'a same-named failing run from another app is advisory' pin_other_app_run_fails 'CI_VERDICT=RED-ADVISORY'
 want      'every page of statuses is read'           pin_status_paged 'CI_VERDICT=GREEN'
+want      'a newer app success replaces its older pending' pin_status_success_over_pending 'CI_VERDICT=GREEN'
+want      'a newer app success replaces its older failure' pin_status_success_over_failure 'CI_VERDICT=GREEN'
 want_exit 'an unreadable statuses lookup exits 1'    pin_status_fail_api 1
 want_not  'an unreadable statuses lookup prints no verdict' pin_status_fail_api 'CI_VERDICT='
 want_exit 'a failed app lookup (not a 404) exits 1'  pin_apps_fail    1
@@ -478,6 +495,10 @@ want      'an unreadable rule on a blocked PR is INCOMPLETE' classic_unreadable_
 want      'the unreadable rule is explained'         classic_unreadable_blocked 'only a repo admin can read whether it requires deployments'
 want      'an unreadable rule on a clean PR is GREEN' classic_unreadable_clean 'CI_VERDICT=GREEN'
 want      'the clean merge box is the stated reason' classic_unreadable_clean 'merge box: CLEAN, so none is unmet'
+want      'an unreadable rule with hooks pending is GREEN' classic_unreadable_hooks 'CI_VERDICT=GREEN'
+want      'an unreadable rule on an unstable PR is GREEN' classic_unreadable_unstable 'CI_VERDICT=GREEN'
+want_not  'an unreadable rule on an unstable PR is not flagged' classic_unreadable_unstable 'only a repo admin can read whether it requires deployments'
+want      'an unreadable rule on a PR behind its base is INCOMPLETE' classic_unreadable_behind 'CI_VERDICT=INCOMPLETE'
 want_exit 'an unreadable classic rule lookup exits 1' classic_graphql_fail 1
 want      'a rulesets-only branch never asks for the classic rule' rulesets_only 'CI_VERDICT=GREEN'
 
