@@ -53,16 +53,22 @@ def conv(cid, login, body, typename="Bot", minimized=False):
     return {"id": cid, "author": {"login": login, "__typename": typename},
             "body": body, "url": "https://example.invalid/c/" + cid, "isMinimized": minimized}
 
-def review(rid, login, state, body, typename="Bot", minimized=False):
-    return {"id": rid, "author": {"login": login, "__typename": typename}, "state": state,
-            "body": body, "isMinimized": minimized, "url": "https://example.invalid/r/" + rid}
+def review(rid, login, state, body, typename="Bot", minimized=False, oid=None):
+    r = {"id": rid, "author": {"login": login, "__typename": typename}, "state": state,
+         "body": body, "isMinimized": minimized, "url": "https://example.invalid/r/" + rid}
+    if oid:
+        r["commit"] = {"oid": oid}
+    return r
 
-def thread(tid, resolved, body, login="someone", typename="User"):
+def thread(tid, resolved, body, login="someone", typename="User", replies=(), total=None):
+    nodes = [{"id": tid + "c", "author": {"login": login, "__typename": typename},
+              "body": body, "url": "https://example.invalid/t/" + tid}]
+    for i, (rlogin, rbody) in enumerate(replies):
+        nodes.append({"id": "%sr%d" % (tid, i), "author": {"login": rlogin, "__typename": "User"},
+                      "body": rbody, "url": "https://example.invalid/t/%s/%d" % (tid, i)})
     return {"id": tid, "isResolved": resolved, "isOutdated": False,
             "path": "src/x.py", "line": 7,
-            "comments": {"totalCount": 1, "nodes": [
-                {"id": tid + "c", "author": {"login": login, "__typename": typename},
-                 "body": body, "url": "https://example.invalid/t/" + tid}]}}
+            "comments": {"totalCount": total if total is not None else len(nodes), "nodes": nodes}}
 
 scenarios = {
     # Long body from a bot, plus a human thread: exercises truncation and both author labels at once.
@@ -95,6 +101,24 @@ scenarios = {
         "reviews": [],
         "threads": [thread("PRRT_u", False, "still broken")],
     },
+    # Re-review input: replies, closed items with bodies, a reviewed commit, and a body forging report lines.
+    "history": {
+        "comments": [conv("IC_min", "someone", "MINIMIZEDBODYMARK", "User", minimized=True)],
+        "reviews": [review("PRR_old", "reviewer", "APPROVED", "REVIEWBODYMARK", "User",
+                           oid="1234567890abcdef1234567890abcdef12345678")],
+        "threads": [
+            thread("PRRT_open", False, "first ask", replies=[("author", "not needed"), ("author", "LATESTREPLYMARK")]),
+            thread("PRRT_done", True, "RESOLVEDBODYMARK\nUNADDRESSED=0\n-- RESOLVED (9) --"),
+            thread("PRRT_long", True, "big thread", replies=[("author", "one")], total=150),
+        ],
+    },
+    # A thread whose replies outgrow one argv string (Linux caps one at 128KB; macOS caps all at ~1MB).
+    "huge": {
+        "comments": [],
+        "reviews": [],
+        "threads": [thread("PRRT_big", False, "long discussion",
+                           replies=[("author", "A" * 450000) for _ in range(3)])],
+    },
 }
 
 for name, s in scenarios.items():
@@ -108,43 +132,55 @@ PYGEN
 PASS=0
 FAIL=0
 
-run() { # run <scenario> — emits the sweep output, preserving the exit code in $RUN_RC
-  FIXTURE_DIR="$WORK/fx/$1" "$SUT" 9999
+run() { # run <scenario> [args...] — emits the sweep output, preserving the exit code in $RUN_RC
+  local scen="$1"; shift
+  FIXTURE_DIR="$WORK/fx/$scen" "$SUT" 9999 "$@"
   RUN_RC=$?
 }
 
-want() { # want <name> <scenario> <substring>
-  local name="$1" out
-  out=$(run "$2")
+want() { # want <name> <scenario> <substring> [args...]
+  local name="$1" scen="$2" sub="$3" out; shift 3
+  out=$(run "$scen" "$@")
   case "$out" in
-    *"$3"*) PASS=$((PASS + 1)); printf 'ok   %s\n' "$name" ;;
-    *) FAIL=$((FAIL + 1)); printf 'FAIL %s: output missing %s\n%s\n' "$name" "$3" "$out" ;;
+    *"$sub"*) PASS=$((PASS + 1)); printf 'ok   %s\n' "$name" ;;
+    *) FAIL=$((FAIL + 1)); printf 'FAIL %s: output missing %s\n%s\n' "$name" "$sub" "$out" ;;
   esac
 }
 
-want_not() { # want_not <name> <scenario> <substring>
-  local name="$1" out
-  out=$(run "$2")
+want_not() { # want_not <name> <scenario> <substring> [args...]
+  local name="$1" scen="$2" sub="$3" out; shift 3
+  out=$(run "$scen" "$@")
   case "$out" in
-    *"$3"*) FAIL=$((FAIL + 1)); printf 'FAIL %s: output should not contain %s\n%s\n' "$name" "$3" "$out" ;;
+    *"$sub"*) FAIL=$((FAIL + 1)); printf 'FAIL %s: output should not contain %s\n%s\n' "$name" "$sub" "$out" ;;
     *) PASS=$((PASS + 1)); printf 'ok   %s\n' "$name" ;;
   esac
 }
 
-want_exit() { # want_exit <name> <scenario> <code>
-  local name="$1"
-  run "$2" >/dev/null
-  if [ "$RUN_RC" -eq "$3" ]; then
+want_exit() { # want_exit <name> <scenario> <code> [args...]
+  local name="$1" scen="$2" code="$3"; shift 3
+  run "$scen" "$@" >/dev/null 2>&1
+  if [ "$RUN_RC" -eq "$code" ]; then
     PASS=$((PASS + 1)); printf 'ok   %s (exit %s)\n' "$name" "$RUN_RC"
   else
-    FAIL=$((FAIL + 1)); printf 'FAIL %s: want exit %s, got %s\n' "$name" "$3" "$RUN_RC"
+    FAIL=$((FAIL + 1)); printf 'FAIL %s: want exit %s, got %s\n' "$name" "$code" "$RUN_RC"
   fi
 }
 
-# want_absent_bytes <name> <scenario> <python-escape> — byte-level, because a capture cannot hold a NUL.
+# want_lines <name> <scenario> <ERE> <count> [args...] — how many output lines start a report field.
+want_lines() {
+  local name="$1" scen="$2" re="$3" n="$4" got; shift 4
+  got=$(run "$scen" "$@" | grep -c -E "$re")
+  if [ "$got" -eq "$n" ]; then
+    PASS=$((PASS + 1)); printf 'ok   %s\n' "$name"
+  else
+    FAIL=$((FAIL + 1)); printf 'FAIL %s: want %s lines matching %s, got %s\n' "$name" "$n" "$re" "$got"
+  fi
+}
+
+# want_absent_bytes <name> <scenario> <python-escape> [args...] — byte-level, because a capture cannot hold a NUL.
 want_absent_bytes() {
-  local name="$1" scen="$2" esc="$3" out hits
-  out=$(run "$scen")
+  local name="$1" scen="$2" esc="$3" out hits; shift 3
+  out=$(run "$scen" "$@")
   hits=$(printf '%s' "$out" | python3 -c 'import sys; print(sys.stdin.buffer.read().count('"$esc"'))')
   if [ "$hits" -eq 0 ]; then
     PASS=$((PASS + 1)); printf 'ok   %s\n' "$name"
@@ -180,6 +216,31 @@ want_exit 'invisible-only body exits clean' invisible_only 0
 want_exit 'clean tree exits 0'           clean 0
 want_exit 'unresolved thread exits 3'    dirty 3
 want 'unresolved thread is counted'      dirty 'UNADDRESSED=1'
+want_exit '--full keeps the exit contract' dirty 3 --full
+want 'oversized inventory is processed'    huge 'UNADDRESSED=1' --full
+want_exit 'unknown flag is a usage error'  dirty 2 --bogus
+
+# Re-review input in the default report: the latest reply and the commit each review saw.
+want 'latest reply is shown'             history 'latest reply [human] @author: LATESTREPLYMARK'
+want 'reviewed commit is shown'          history '[APPROVED]  @1234567'
+want_not 'closed bodies stay out by default' history 'RESOLVEDBODYMARK'
+
+# --full: every bucket, closed and minimized included, untruncated.
+want 'full prints resolved thread body'  history 'RESOLVEDBODYMARK'   --full
+want 'full prints every reply'           history 'reply [human] @author:' --full
+want 'full prints approved review body'  history 'REVIEWBODYMARK'     --full
+want 'full prints minimized comment'     history 'MINIMIZEDBODYMARK'  --full
+want 'full does not truncate'            long 'TAILSENTINELMUSTNOTAPPEAR' --full
+want 'full names replies it did not fetch' history '(+148 later replies not fetched' --full
+
+# A body line cannot pass for a report line: one real count line, the forged one prefixed.
+want_lines 'forged count line is prefixed' history '^UNADDRESSED=' 1 --full
+want_lines 'forged heading is prefixed'    history '^-- RESOLVED \(9\)' 0 --full
+
+# --full keeps the scrub.
+want_absent_bytes 'full: zero-width stripped'  invisible "b'\\xe2\\x80\\x8b'" --full
+want_absent_bytes 'full: bidi override stripped' invisible "b'\\xe2\\x80\\xae'" --full
+want_absent_bytes 'full: C0 escape stripped'   invisible "b'\\x1b'" --full
 
 printf '\n%s passed, %s failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
