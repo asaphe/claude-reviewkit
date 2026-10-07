@@ -86,6 +86,9 @@ PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,baseRefName,
 BASE="$(jq -r '.baseRefName // empty' <<<"$PR_JSON")" || jq_fail "the base branch"
 HEAD_SHA="$(jq -r '.headRefOid // empty' <<<"$PR_JSON")" || jq_fail "the head"
 MERGE_STATE="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$PR_JSON")" || jq_fail "the merge state"
+# The head and the merge state are rendered: a value that is not an OID or an enum is not echoed.
+[[ -z "$HEAD_SHA" || "$HEAD_SHA" =~ ^([0-9a-f]{40}|[0-9a-f]{64})$ ]] || { echo "ERROR: PR #$PR_NUMBER head is not a commit id in the response." >&2; exit 1; }
+[[ "$MERGE_STATE" =~ ^[A-Z_]{1,40}$ ]] || MERGE_STATE="UNKNOWN"
 [[ -n "$BASE" ]] || { echo "ERROR: PR #$PR_NUMBER has no base branch in the response." >&2; exit 1; }
 # The branch is a path segment: a `#` or `?` in it would cut the URL short and read another branch's rules.
 BASE_PATH="$(jq -rn --arg b "$BASE" '$b | @uri | gsub("%2F"; "/")')" || jq_fail "the base branch path"
@@ -215,7 +218,8 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
         [(.conclusion // "") | ascii_upcase] // "unknown")
     end;
   # A running check carries conclusion "", which `//` keeps, so the status is read explicitly.
-  def outcome: if .__typename == "StatusContext" then (.state // "?") elif (.conclusion // "") == "" then (.status // "?") else .conclusion end;
+  def enum: if type == "string" and test("^[A-Z_]{1,40}$") then . else "?" end;
+  def outcome: if .__typename == "StatusContext" then ((.state // "?") | enum) elif (.conclusion // "") == "" then ((.status // "?") | enum) else (.conclusion | enum) end;
   # Worst-of across same-named entries: the rollup holds only latest attempts, so each one is a separate run.
   def rank: {"failed":0,"pending":1,"unknown":2,"not_run":3,"success":4}[.];
 

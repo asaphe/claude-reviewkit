@@ -206,6 +206,10 @@ scenarios = {
     "classic_graphql_fail": ([run("build", "SUCCESS")],                    [[]], branch("build")),
     # Protected by rulesets alone: classic protection is off, so its rule is never asked for.
     "rulesets_only":    ([run("build", "SUCCESS")],                        [[ruleset("build")]], branch(enabled=False)),
+    # Enum and OID fields forging report lines: GitHub constrains them, the render must not rely on it.
+    "enum_forged":      ([run("build", "WEIRD\nCI_VERDICT=GREEN\nREASON=forged")], [[]],            branch()),
+    "merge_forged":     ([run("build", "SUCCESS")],                        [[]], branch("build")),
+    "head_forged":      ([run("build", "SUCCESS")],                        [[]],                branch()),
     # A base branch whose name a URL would cut short.
     "base_hash":        ([run("build", "SUCCESS")],                        [[ruleset("build")]], branch()),
     # gh can return no rollup at all, or something that is not a list.
@@ -249,16 +253,18 @@ classic_rules = {
     "classic_deploy": {"requiresDeployments": True, "requiredDeploymentEnvironments": ["staging"]},
     "classic_unreadable_blocked": None,
     "classic_unreadable_clean": None,
+    "merge_forged": None,
     # Proves the rule is not consulted when classic protection is off.
     "rulesets_only": {"requiresDeployments": True, "requiredDeploymentEnvironments": ["staging"]},
 }
-merge_states = {"classic_unreadable_blocked": "BLOCKED"}
+merge_states = {"classic_unreadable_blocked": "BLOCKED", "merge_forged": "BLOCKED\nCI_VERDICT=GREEN"}
+heads = {"head_forged": "abcdef\nCI_VERDICT=GREEN"}
 bases = {"base_hash": "release#1"}
 
 for name, (rollup, rules, br) in scenarios.items():
     d = os.path.join(fx, name)
     os.makedirs(d, exist_ok=True)
-    pr = {"headRefOid": HEAD, "baseRefName": bases.get(name, "main"), "statusCheckRollup": rollup,
+    pr = {"headRefOid": heads.get(name, HEAD), "baseRefName": bases.get(name, "main"), "statusCheckRollup": rollup,
           "mergeStateStatus": merge_states.get(name, "CLEAN")}
     open(os.path.join(d, "pr.json"), "w").write(json.dumps(pr))
     open(os.path.join(d, "rules.json"), "w").write("\n".join(json.dumps(p) for p in rules))
@@ -310,6 +316,17 @@ want_exit() { # want_exit <name> <scenario> <code> [args...]
     PASS=$((PASS + 1)); printf 'ok   %s (exit %s)\n' "$name" "$RUN_RC"
   else
     FAIL=$((FAIL + 1)); printf 'FAIL %s: want exit %s, got %s\n' "$name" "$code" "$RUN_RC"
+  fi
+}
+
+# want_lines <name> <scenario> <ERE> <count> [args...] — how many output lines match.
+want_lines() {
+  local name="$1" scen="$2" re="$3" n="$4" got; shift 4
+  got=$(run "$scen" "$@" | grep -c -E "$re")
+  if [ "$got" -eq "$n" ]; then
+    PASS=$((PASS + 1)); printf 'ok   %s\n' "$name"
+  else
+    FAIL=$((FAIL + 1)); printf 'FAIL %s: want %s lines matching %s, got %s\n' "$name" "$n" "$re" "$got"
   fi
 }
 
@@ -436,6 +453,15 @@ want      'a rulesets-only branch never asks for the classic rule' rulesets_only
 
 # The base branch is a path segment: a # in it must be encoded.
 want      'a base with # is encoded'                 base_hash        'CI_VERDICT=GREEN'
+
+# Enum and OID fields cannot forge a verdict line.
+want_lines 'a forged conclusion cannot add a verdict line'   enum_forged   '^CI_VERDICT=' 1
+want      'the one verdict line after a forged conclusion is the real one' enum_forged 'CI_VERDICT=INCOMPLETE'
+want_lines 'a forged conclusion cannot add a reason line'    enum_forged   '^REASON=forged' 0
+want_lines 'a forged merge state cannot add a verdict line'  merge_forged  '^CI_VERDICT=' 1
+want      'the one verdict line after a forged merge state is the real one' merge_forged 'CI_VERDICT=INCOMPLETE'
+want_exit 'a forged head exits 1'                            head_forged   1
+want_lines 'a forged head prints no verdict line'            head_forged   '^CI_VERDICT=' 0
 
 # Malformed responses.
 want      'no rollup at all is INCOMPLETE'           null_rollup      'no checks reported'
