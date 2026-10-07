@@ -5,7 +5,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SUT="${SCRIPT_DIR}/pr-ci-verdict.sh"
+SUT="${PCV_SUT:-${SCRIPT_DIR}/pr-ci-verdict.sh}"
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/pcv-test.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
@@ -20,6 +20,10 @@ case "$1 $2" in
     [ -e "$FIXTURE_DIR/graphql.fail" ] && { echo "HTTP 502" >&2; exit 1; }
     cat "$FIXTURE_DIR/classic_rule.json"; exit 0 ;;
 esac
+# Without --paginate the real gh returns the first page only: every page is one line of the fixture.
+PAG=0
+for a in "$@"; do [ "$a" = "--paginate" ] && PAG=1; done
+pages() { if [ "$PAG" = 1 ]; then cat; else head -n 1; fi; }
 for a in "$@"; do
   case "$a" in
     *'#'*) echo "stub gh: unencoded # in $a" >&2; exit 1 ;;
@@ -32,7 +36,7 @@ for a in "$@"; do
       if [ -e "$FIXTURE_DIR/checkruns.paged" ]; then
         jq -c --arg n "$name" --arg a "$app" \
           '[.[] | select((.name | @uri) == $n and (.app.id | tostring) == $a)] | length as $t | .[] | {total_count: $t, check_runs: [.]}' \
-          "$FIXTURE_DIR/checkruns.json"
+          "$FIXTURE_DIR/checkruns.json" | pages
       else
         jq -c --arg n "$name" --arg a "$app" \
           '[.[] | select((.name | @uri) == $n and (.app.id | tostring) == $a)] | {total_count: length, check_runs: .}' \
@@ -41,14 +45,14 @@ for a in "$@"; do
       exit 0 ;;
     */statuses\?*)
       [ -e "$FIXTURE_DIR/statuses.fail" ] && { echo "HTTP 502" >&2; exit 1; }
-      cat "$FIXTURE_DIR/statuses.json"; exit 0 ;;
+      pages < "$FIXTURE_DIR/statuses.json"; exit 0 ;;
     apps/*)
       id=$(jq -r --arg s "${a#apps/}" '.[$s] // empty' "$FIXTURE_DIR/apps.json")
       [ -n "$id" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
       printf '{"id": %s}\n' "$id"; exit 0 ;;
     */rules/branches/*)
       [ -e "$FIXTURE_DIR/rules.fail" ] && { echo "HTTP 403" >&2; exit 1; }
-      cat "$FIXTURE_DIR/rules.json"; exit 0 ;;
+      pages < "$FIXTURE_DIR/rules.json"; exit 0 ;;
     */branches/*) cat "$FIXTURE_DIR/branch.json"; exit 0 ;;
   esac
 done
