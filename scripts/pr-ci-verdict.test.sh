@@ -47,6 +47,7 @@ for a in "$@"; do
       [ -e "$FIXTURE_DIR/statuses.fail" ] && { echo "HTTP 502" >&2; exit 1; }
       pages < "$FIXTURE_DIR/statuses.json"; exit 0 ;;
     apps/*)
+      [ -e "$FIXTURE_DIR/apps.fail" ] && { echo "HTTP 502" >&2; exit 1; }
       id=$(jq -r --arg s "${a#apps/}" '.[$s] // empty' "$FIXTURE_DIR/apps.json")
       [ -n "$id" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
       printf '{"id": %s}\n' "$id"; exit 0 ;;
@@ -183,6 +184,8 @@ scenarios = {
     # The app's status is on the second page of statuses.
     "pin_status_paged": ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
     "pin_status_fail_api": ([ctx("ext-ci", "SUCCESS")],                    [[ruleset("ext-ci", app=12345)]], branch()),
+    # The app-slug lookup fails with something other than a 404.
+    "pin_apps_fail":    ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
     # A same-named failure from a source the pin excludes does not fail the requirement, in rulesets or classic.
     "pin_other_fails":  ([run("ext-ci", "SUCCESS", workflow=""), ctx("ext-ci", "FAILURE")],
                          [[ruleset("ext-ci", app=12345)]], branch()),
@@ -237,6 +240,7 @@ statuses = {
     "pin_status_paged":      [[status("other", "success", "other-ci[bot]")],
                               [status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_status_fail_api":   [[status("ext-ci", "success", "ext-ci-app[bot]")]],
+    "pin_apps_fail":         [[status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_other_fails":       [[status("ext-ci", "failure", "someone", kind="User")]],
     "pin_classic_other_fails": [[status("build", "failure", "other-ci[bot]")]],
 }
@@ -268,6 +272,7 @@ open(os.path.join(fx, "pin_fail_api", "checkruns.fail"), "w").write("")
 open(os.path.join(fx, "pin_paged", "checkruns.paged"), "w").write("")
 open(os.path.join(fx, "pin_status_fail_api", "statuses.fail"), "w").write("")
 open(os.path.join(fx, "classic_graphql_fail", "graphql.fail"), "w").write("")
+open(os.path.join(fx, "pin_apps_fail", "apps.fail"), "w").write("")
 PYGEN
 
 PASS=0
@@ -399,6 +404,9 @@ want      'the app latest status counts, not a user one' pin_status_mixed 'CI_VE
 want      'every page of statuses is read'           pin_status_paged 'CI_VERDICT=GREEN'
 want_exit 'an unreadable statuses lookup exits 1'    pin_status_fail_api 1
 want_not  'an unreadable statuses lookup prints no verdict' pin_status_fail_api 'CI_VERDICT='
+want_exit 'a failed app lookup (not a 404) exits 1'  pin_apps_fail    1
+want_not  'a failed app lookup prints no verdict'    pin_apps_fail    'CI_VERDICT='
+want      'a failed app lookup names the app'        pin_apps_fail    "could not look up app 'ext-ci-app' for required 'ext-ci'"
 
 # A failure the pin excludes is a non-required failure, not a failed requirement.
 want      'an excluded source failing is advisory'   pin_other_fails  'CI_VERDICT=RED-ADVISORY'

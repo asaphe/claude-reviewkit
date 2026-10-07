@@ -143,6 +143,8 @@ fi
 # The rollup does not say who reported an entry, so a pinned context is read from its app: check runs, then commit statuses.
 PINNED="[]"
 STATUSES=""
+APP_ERR="$(mktemp "${TMPDIR:-/tmp}/pcv-app.XXXXXX")" || { echo "ERROR: could not create a temp file." >&2; exit 1; }
+trap 'rm -f "$APP_ERR"' EXIT
 APP_IDS="{}"
 while IFS= read -r SPEC; do
   [[ -n "$SPEC" ]] || continue
@@ -173,8 +175,15 @@ while IFS= read -r SPEC; do
     while IFS= read -r SLUG; do
       [[ -n "$SLUG" ]] || continue
       [[ "$(jq --arg s "$SLUG" 'has($s)' <<<"$APP_IDS")" == false ]] || continue
-      # A private app is invisible to this token (404): its statuses stay unattributed, never assumed.
-      APP_ID="$(gh api "apps/$SLUG" 2>/dev/null | jq -r '.id // empty' 2>/dev/null)" || APP_ID=""
+      # A private app is invisible to this token (404): its statuses stay unattributed, never assumed. Any other failure is no answer.
+      if APP_OUT="$(gh api "apps/$SLUG" 2>"$APP_ERR")"; then
+        APP_ID="$(jq -r '.id // empty' <<<"$APP_OUT" 2>/dev/null)" || APP_ID=""
+      elif grep -q '(HTTP 404)' "$APP_ERR"; then
+        APP_ID=""
+      else
+        echo "ERROR: could not look up app '$SLUG' for required '$PIN_CTX' — required checks unknown." >&2
+        exit 1
+      fi
       [[ "$APP_ID" =~ ^[0-9]+$ ]] || APP_ID="null"
       APP_IDS="$(jq --arg s "$SLUG" --argjson id "$APP_ID" '. + {($s): $id}' <<<"$APP_IDS")" || jq_fail "an app lookup"
     done < <(jq -r --argjson s "$SPEC" '[ .[] | select(.context == $s.context and (.creator.type // "") == "Bot")
