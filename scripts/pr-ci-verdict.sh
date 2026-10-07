@@ -204,7 +204,7 @@ done < <(jq -c '.[] | select(.app != null)' <<<"$REQ_SPECS")
 RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pinned "$PINNED" --argjson deploy "$DEPLOY" \
              --arg want "$WANT_HEAD" --arg pr "$PR_NUMBER" --arg repo "$REPO" '
   # Check names come from workflow files a PR can edit: strip what reorders an agent-read render.
-  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[  ]";" "));
+  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[\u2028\u2029]";" "));
   def bucket:
     if .__typename == "StatusContext" then
       ({"SUCCESS":"success","FAILURE":"failed","ERROR":"failed","PENDING":"pending","EXPECTED":"pending"}
