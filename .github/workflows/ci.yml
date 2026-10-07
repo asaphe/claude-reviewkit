@@ -50,9 +50,12 @@ jobs:
           find . -name '*.json' -not -path './node_modules/*' -not -path './.git/*' -print0 \
             | xargs -0 -n1 python3 -c 'import json,sys; json.load(open(sys.argv[1]))'
 
-      # The sweep is the only executable surface here, and its jq program is where the untrusted-input handling lives.
+      # The scripts are the only executable surface here: the sweep's jq program handles untrusted input, the verdict's decides "green".
       - name: Sweep contract tests
         run: ./scripts/pr-comment-state.test.sh
+
+      - name: CI verdict contract tests
+        run: ./scripts/pr-ci-verdict.test.sh
 
       # Relative links only: a network checker fails on rate limits rather than on repo defects.
       - name: Relative link check
