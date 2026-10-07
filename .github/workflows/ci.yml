@@ -79,3 +79,21 @@ jobs:
               sys.exit(1)
           print('relative links OK')
           PY
+
+  # macOS ships bash 3.2 as /bin/bash: the scripts must run there, not only under the runner's newer bash.
+  bash-3-2:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Contract tests under /bin/bash 3.2
+        env:
+          BASH_UNDER_TEST: /bin/bash
+        run: |
+          set -euo pipefail
+          /bin/bash -c 'echo "script shell: bash $BASH_VERSION"'
+          ./scripts/pr-comment-state.test.sh
+          ./scripts/pr-ci-verdict.test.sh
