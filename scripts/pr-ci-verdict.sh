@@ -16,10 +16,19 @@ branch's required contexts from both rulesets and classic branch protection.
 Repo: $GH_REPO (owner/name) if set, else `gh repo view`.
 Fails loud on any API error — never prints a verdict from a failed query.
 
-A re-run supersedes the earlier attempt of the same check in the same
-workflow. A required context pinned to an app (ruleset integration_id,
-classic checks[].app_id) is read from that app's own check runs: a
-same-named check or status from another source does not satisfy it.
+GitHub keeps only the latest attempt of each workflow run in the rollup, so a
+re-run replaces its failed attempt there. Same-named entries that remain come
+from separate runs (a push run and a pull_request run, say): the worst counts.
+
+A required context pinned to an app (ruleset integration_id, classic
+checks[].app_id) counts only from that app: its check runs, or a commit status
+whose creator is the app's bot. A status posted with a user's token names the
+user, and a private app's bot cannot be looked up, so neither proves its app:
+INCOMPLETE.
+
+Classic protection's "Require deployments to succeed" names no check, and only
+a repo admin can read it. Without admin access it is treated as possibly set
+unless the merge box reads the PR as mergeable.
 
 Verdict (CI_VERDICT= line, then REASON=):
   GREEN         every reported check succeeded, and every required context
@@ -28,10 +37,12 @@ Verdict (CI_VERDICT= line, then REASON=):
   INCOMPLETE    anything pending; a required context not reported (by its app,
                 when pinned), or reported skipped/neutral (passes the gate,
                 proves nothing ran); no checks at all, or none that succeeded;
-                a ruleset gate no check name maps to (required workflows, code
-                scanning, deployments: confirm in the merge box); a moved head
-  RED-ADVISORY  only non-required checks failed and no such ruleset gate
-                exists; still not green
+                a gate no check name maps to (ruleset required workflows, code
+                scanning or deployments; classic required deployments, set or
+                unreadable while the PR is not mergeable): confirm in the merge
+                box; a moved head
+  RED-ADVISORY  only non-required checks failed and no such gate exists;
+                still not green
 
 Exit codes:
   0  GREEN
@@ -68,12 +79,13 @@ jq_fail() {
   exit 1
 }
 
-PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,baseRefName,statusCheckRollup)" || {
+PR_JSON="$(gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid,baseRefName,statusCheckRollup,mergeStateStatus)" || {
   echo "ERROR: could not read PR #$PR_NUMBER in $REPO." >&2
   exit 1
 }
 BASE="$(jq -r '.baseRefName // empty' <<<"$PR_JSON")" || jq_fail "the base branch"
 HEAD_SHA="$(jq -r '.headRefOid // empty' <<<"$PR_JSON")" || jq_fail "the head"
+MERGE_STATE="$(jq -r '.mergeStateStatus // "UNKNOWN"' <<<"$PR_JSON")" || jq_fail "the merge state"
 [[ -n "$BASE" ]] || { echo "ERROR: PR #$PR_NUMBER has no base branch in the response." >&2; exit 1; }
 # The branch is a path segment: a `#` or `?` in it would cut the URL short and read another branch's rules.
 BASE_PATH="$(jq -rn --arg b "$BASE" '$b | @uri | gsub("%2F"; "/")')" || jq_fail "the base branch path"
@@ -89,38 +101,98 @@ CLASSIC="$(gh api "repos/$REPO/branches/$BASE_PATH")" || {
 }
 # Each requirement is a context and the app it must come from (null: any source).
 REQ_SPECS="$(jq -s --argjson classic "$CLASSIC" '
+  # The API types the pin as an integer: null and -1 mean any source, and any other value is not guessed at.
+  def pin: if . == null or . == -1 then null
+           elif type == "number" and . > 0 and floor == . then .
+           else error("unexpected app id \(tojson)") end;
+  ($classic.protection.required_status_checks // {}) as $rsc |
   ([ (add // [])[] | select(.type == "required_status_checks") | .parameters.required_status_checks[]
-     | {context, app: .integration_id} ]
-   + [ ($classic.protection.required_status_checks.contexts // [])[] | {context: ., app: null} ]
-   + [ ($classic.protection.required_status_checks.checks // [])[] | {context, app: .app_id} ])
-  | map(.app = (if (.app | type) == "number" and .app > 0 then .app else null end))
+     | {context, app: (.integration_id | pin)} ]
+   + [ ($rsc.checks // [])[] | {context, app: (.app_id | pin)} ]
+   # contexts is the legacy mirror of checks[]: a name already there must not add an any-source twin.
+   + [ ($rsc.contexts // [])[] | select(IN(($rsc.checks // [])[].context) | not) | {context: ., app: null} ])
   | unique' <<<"$RULES")" || jq_fail "the required contexts"
 # Ruleset rules that gate the merge without naming a status check, so no rollup entry can prove them.
 GATES="$(jq -s '[ (add // [])[] | .type
   | select(IN("workflows", "code_scanning", "code_quality", "code_coverage", "license_compliance_scanning", "required_deployments")) ]
   | unique' <<<"$RULES")" || jq_fail "the ruleset gates"
 
-# The rollup does not say which app reported a check, so a pinned context is read from that app's own check runs.
+# Classic "Require deployments to succeed" is absent from REST; GraphQL shows the rule to repo admins and null to everyone else.
+DEPLOY='{"state":"none"}'
+CLASSIC_ON="$(jq -r 'if .protected == false or .protection.enabled == false then "off" else "on" end' <<<"$CLASSIC")" || jq_fail "the branch protection"
+if [[ "$CLASSIC_ON" == on ]]; then
+  # shellcheck disable=SC2016  # GraphQL variables, not shell expansions
+  RULE_Q='query($owner:String!,$name:String!,$ref:String!){
+    repository(owner:$owner,name:$name){ ref(qualifiedName:$ref){ branchProtectionRule{ requiresDeployments requiredDeploymentEnvironments } } } }'
+  RULE_JSON="$(gh api graphql -f owner="${REPO%%/*}" -f name="${REPO##*/}" -f ref="refs/heads/$BASE" -f query="$RULE_Q")" || {
+    echo "ERROR: could not read the classic protection rule for $REPO@$BASE — required deployments unknown." >&2
+    exit 1
+  }
+  DEPLOY="$(jq --arg merge "$MERGE_STATE" '
+    if (.errors // []) | length > 0 then error("GraphQL errors")
+    elif .data.repository.ref == null then error("no such ref")
+    else .data.repository.ref.branchProtectionRule as $r
+      | if $r == null then
+          # Unreadable: only a merge box that reads mergeable proves no required deployment is unmet.
+          {state: (if IN($merge; "CLEAN", "HAS_HOOKS", "UNSTABLE") then "unreadable_clear" else "unreadable" end), merge: $merge}
+        elif $r.requiresDeployments == true then {state: "required", envs: ($r.requiredDeploymentEnvironments // [])}
+        else {state: "none"} end
+    end' <<<"$RULE_JSON")" || jq_fail "the classic protection rule"
+fi
+
+# The rollup does not say who reported an entry, so a pinned context is read from its app: check runs, then commit statuses.
 PINNED="[]"
-while IFS=$'\t' read -r PIN_CTX PIN_APP; do
-  [[ -n "$PIN_CTX" ]] || continue
+STATUSES=""
+APP_IDS="{}"
+while IFS= read -r SPEC; do
+  [[ -n "$SPEC" ]] || continue
   [[ -n "$HEAD_SHA" ]] || { echo "ERROR: PR #$PR_NUMBER has no head in the response." >&2; exit 1; }
-  PIN_NAME="$(jq -rn --arg c "$PIN_CTX" '$c | @uri')" || jq_fail "a pinned context name"
-  PIN_RUNS="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=$PIN_NAME&app_id=$PIN_APP&per_page=100")" || {
+  PIN_CTX="$(jq -r '.context' <<<"$SPEC")" || jq_fail "a pinned context"
+  PIN_APP="$(jq -r '.app' <<<"$SPEC")" || jq_fail "a pinned app"
+  PIN_NAME="$(jq -r '.context | @uri' <<<"$SPEC")" || jq_fail "a pinned context name"
+  # filter=latest (the default, stated) drops superseded attempts, as the rollup does.
+  PIN_RUNS="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/check-runs?check_name=$PIN_NAME&app_id=$PIN_APP&filter=latest&per_page=100")" || {
     echo "ERROR: could not read check runs for required '$PIN_CTX' from app $PIN_APP — required checks unknown." >&2
     exit 1
   }
-  PINNED="$(jq -s --argjson acc "$PINNED" --arg c "$PIN_CTX" --argjson a "$PIN_APP" '
-    $acc + [{context: $c, app: $a, runs: [ .[].check_runs[] | {
-      __typename: "CheckRun", name: .name, workflowName: "", startedAt: (.started_at // ""),
-      status: ((.status // "") | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase) } ]}]' <<<"$PIN_RUNS")" \
+  RUNS="$(jq -s '[ .[].check_runs[] | {
+      __typename: "CheckRun", status: ((.status // "") | ascii_upcase), conclusion: ((.conclusion // "") | ascii_upcase) } ]' <<<"$PIN_RUNS")" \
     || jq_fail "the check runs for '$PIN_CTX'"
-done < <(jq -r '.[] | select(.app != null) | [.context, (.app | tostring)] | @tsv' <<<"$REQ_SPECS")
+  ST="[]"
+  HAS_STATUS="$(jq --argjson s "$SPEC" '[ .statusCheckRollup[]? | select(.__typename == "StatusContext" and .context == $s.context) ] | length > 0' <<<"$PR_JSON")" \
+    || jq_fail "the rollup statuses"
+  if [[ "$HAS_STATUS" == true ]]; then
+    if [[ -z "$STATUSES" ]]; then
+      STATUSES="$(gh api --paginate "repos/$REPO/commits/$HEAD_SHA/statuses?per_page=100")" || {
+        echo "ERROR: could not read commit statuses on $HEAD_SHA — required checks unknown." >&2
+        exit 1
+      }
+      STATUSES="$(jq -s 'add // []' <<<"$STATUSES")" || jq_fail "the commit statuses"
+    fi
+    # A status names its creator, not its app; an app's bot is <slug>[bot], and the slug resolves to the app ID.
+    while IFS= read -r SLUG; do
+      [[ -n "$SLUG" ]] || continue
+      [[ "$(jq --arg s "$SLUG" 'has($s)' <<<"$APP_IDS")" == false ]] || continue
+      # A private app is invisible to this token (404): its statuses stay unattributed, never assumed.
+      APP_ID="$(gh api "apps/$SLUG" 2>/dev/null | jq -r '.id // empty' 2>/dev/null)" || APP_ID=""
+      [[ "$APP_ID" =~ ^[0-9]+$ ]] || APP_ID="null"
+      APP_IDS="$(jq --arg s "$SLUG" --argjson id "$APP_ID" '. + {($s): $id}' <<<"$APP_IDS")" || jq_fail "an app lookup"
+    done < <(jq -r --argjson s "$SPEC" '[ .[] | select(.context == $s.context and (.creator.type // "") == "Bot")
+      | (.creator.login // "") | select(endswith("[bot]")) | rtrimstr("[bot]") | select(test("^[A-Za-z0-9][A-Za-z0-9-]*$")) ] | unique[]' <<<"$STATUSES")
+    ST="$(jq --argjson s "$SPEC" --argjson ids "$APP_IDS" '[ .[] | select(.context == $s.context) | {
+        __typename: "StatusContext", state: ((.state // "") | ascii_upcase), login: (.creator.login // ""),
+        app: ((.creator.login // "") as $l
+              | if (.creator.type // "") == "Bot" and ($l | endswith("[bot]")) then $ids[$l | rtrimstr("[bot]")] else null end) } ]' <<<"$STATUSES")" \
+      || jq_fail "the commit statuses for '$PIN_CTX'"
+  fi
+  PINNED="$(jq -n --argjson acc "$PINNED" --argjson s "$SPEC" --argjson runs "$RUNS" --argjson st "$ST" \
+    '$acc + [{context: $s.context, app: $s.app, runs: $runs, statuses: $st}]')" || jq_fail "the pinned contexts"
+done < <(jq -c '.[] | select(.app != null)' <<<"$REQ_SPECS")
 
-RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pinned "$PINNED" \
+RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pinned "$PINNED" --argjson deploy "$DEPLOY" \
              --arg want "$WANT_HEAD" --arg pr "$PR_NUMBER" --arg repo "$REPO" '
   # Check names come from workflow files a PR can edit: strip what reorders an agent-read render.
-  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[\u2028\u2029]";" "));
+  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[  ]";" "));
   def bucket:
     if .__typename == "StatusContext" then
       ({"SUCCESS":"success","FAILURE":"failed","ERROR":"failed","PENDING":"pending","EXPECTED":"pending"}
@@ -135,27 +207,30 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
     end;
   # A running check carries conclusion "", which `//` keeps, so the status is read explicitly.
   def outcome: if .__typename == "StatusContext" then (.state // "?") elif (.conclusion // "") == "" then (.status // "?") else .conclusion end;
-  # An attempt not started yet carries the zero time and is the newest one.
-  def started: (.startedAt // "") as $s | if $s == "" or ($s | startswith("0001-")) then "9999" else $s end;
-  # Worst-of across same-named entries from different workflows: one failing run of a required name fails it.
+  # Worst-of across same-named entries: the rollup holds only latest attempts, so each one is a separate run.
   def rank: {"failed":0,"pending":1,"unknown":2,"not_run":3,"success":4}[.];
 
-  ($specs | map(scrub(.context)) | unique) as $req |
+  ($specs | map(scrub(.context)) | unique) as $allReq |
+  # A name required only from a specific app is judged only through that app.
+  ($specs | map(select(.app == null) | scrub(.context)) | unique) as $req |
   (.headRefOid // "") as $head |
   ($want != "" and (($head | ascii_downcase) | startswith($want | ascii_downcase) | not)) as $moved |
-  # A re-run supersedes the attempt before it, so only the latest per check name and workflow counts.
-  [ (.statusCheckRollup // [])
-    | group_by([.__typename, (.name // .context // ""), (.workflowName // "")])
-    | map(if .[0].__typename == "CheckRun" then max_by(started) else .[] end)
-    | .[] | {
+  [ (.statusCheckRollup // []) | .[] | {
       name: scrub(.name // .context // "?"),
       workflow: scrub(.workflowName // ""),
       bucket: bucket,
       outcome: outcome
     } | .required = (.name as $n | $req | index($n) != null) ] as $C |
-  [ $pinned[] | {name: scrub(.context), app} + (
-      if (.runs | length) == 0 then {bucket: "missing", outcome: "not reported by app \(.app)"}
-      else (.runs | max_by(started) | {bucket: bucket, outcome: outcome}) end) ] as $P |
+  [ $pinned[] | . as $p | {name: scrub(.context), app} + (
+      # The app own entries: every check run, plus its latest status (the list is newest first).
+      (.runs + ([.statuses[] | select(.app == $p.app)] | .[:1])) as $mine |
+      [.statuses[] | select(.app == null) | "@" + scrub(.login)] as $unproven |
+      if ($mine | length) > 0 then ($mine | min_by(bucket | rank) | {bucket: bucket, outcome: outcome})
+      elif ($unproven | length) > 0 then
+        {bucket: "unverified", outcome: "reported as a commit status by \($unproven | unique | join(", ")), which this script cannot attribute to app \(.app) — confirm in the merge box"}
+      else
+        {bucket: "missing", outcome: "not reported by app \(.app)\(if (.statuses | length) > 0 then " (a commit status from app \([.statuses[].app] | unique | map(tostring) | join(", ")) does not count)" else "" end)"}
+      end) ] as $P |
   ($P | map(select(.bucket == "failed")))                      as $pinFailed |
   ($P | map(select(.bucket != "failed" and .bucket != "success"))) as $pinOpen |
   ($C | map(select(.bucket == "failed")))                      as $failed |
@@ -165,6 +240,7 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
   ($req | map(. as $n | select([$C[] | select(.name == $n)] | length == 0))) as $missing |
   ($req | map(. as $n | select(([$C[] | select(.name == $n) | .bucket] | min_by(rank)) == "not_run"))) as $reqNotRun |
   ($failed | map(select(.required)))                           as $failedReq |
+  ($deploy.envs // [] | map(scrub(.)) | if length == 0 then "environments not listed" else join(", ") end) as $envs |
 
   # A moved head outranks everything: the rollup then describes a commit nobody reviewed.
   ( if $moved then
@@ -177,17 +253,20 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
       ["INCOMPLETE", ([ (if ($pending | length) > 0 then "\($pending | length) pending" else empty end),
                         (if ($missing | length) > 0 then "required not reported: \($missing | join(", "))" else empty end),
                         (if ($reqNotRun | length) > 0 then "required skipped/neutral: \($reqNotRun | join(", "))" else empty end),
-                        ($pinOpen[] | "required \(.name) \(if .bucket == "missing" then .outcome else "from app \(.app): \(.outcome)" end)")
+                        ($pinOpen[] | "required \(.name) \(if .bucket == "missing" or .bucket == "unverified" then .outcome else "from app \(.app): \(.outcome)" end)")
                       ] | join("; "))]
-    # A required workflow or code-scanning result names no status check, so a failure under it is not advisory.
-    elif ($gates | length) > 0 then
-      ["INCOMPLETE", "ruleset also gates on \($gates | join(", ")), which no check name in the rollup maps to — confirm in the merge box\(if ($failed | length) > 0 then "; check failed: \($failed | map(.name) | unique | join(", "))" else "" end)"]
+    # A required workflow, code-scanning result or deployment names no status check, so a failure under one is not advisory.
+    elif ($gates | length) > 0 or IN($deploy.state; "required", "unreadable") then
+      ["INCOMPLETE", ([ (if ($gates | length) > 0 then "ruleset also gates on \($gates | join(", ")), which no check name in the rollup maps to" else empty end),
+                        (if $deploy.state == "required" then "classic protection requires deployments to \($envs), which no check name maps to" else empty end),
+                        (if $deploy.state == "unreadable" then "classic protection is on and only a repo admin can read whether it requires deployments; the merge box reads \($deploy.merge)" else empty end)
+                      ] | join("; ")) + " — confirm in the merge box\(if ($failed | length) > 0 then "; check failed: \($failed | map(.name) | unique | join(", "))" else "" end)"]
     elif ($ok | length) == 0 and ($failed | length) == 0 then
       ["INCOMPLETE", "no check succeeded: \($notrun | length) skipped/neutral — nothing proves CI ran"]
     elif ($failed | length) > 0 then
       ["RED-ADVISORY", "non-required check failed: \($failed | map(.name) | unique | join(", "))"]
     else
-      ["GREEN", "\($ok | length) succeeded, \($notrun | length) skipped/neutral (none required); all \($req | length) required present and succeeded"]
+      ["GREEN", "\($ok | length) succeeded, \($notrun | length) skipped/neutral (none required); all \($allReq | length) required present and succeeded"]
     end ) as $v |
 
   def row: "  \(if .required then "[required] " else "" end)\(.name)\(if .workflow != "" then " (\(.workflow))" else "" end): \(.outcome)";
@@ -195,7 +274,7 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
 
   { verdict: $v[0],
     report: ([ "=== PR #\($pr) — \($repo) — CI verdict ===",
-               "HEAD=\($head)  BASE-REQUIRED=\($req | length)\(if ($req | length) > 0 then " (\($req | join(", ")))" else "" end)",
+               "HEAD=\($head)  BASE-REQUIRED=\($allReq | length)\(if ($allReq | length) > 0 then " (\($allReq | join(", ")))" else "" end)",
                "ROLLUP: \($C | length) total — \($ok | length) succeeded, \($failed | length) failed/cancelled, \($pending | length) pending, \($notrun | length) skipped/neutral" ]
              + section("FAILED / CANCELLED"; $failed)
              + section("PENDING"; $pending)
@@ -206,6 +285,11 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
                  + ($P | map("  [required] \(.name) (app \(.app)): \(.outcome)")) end)
              + (if ($gates | length) == 0 then [] else
                  ["", "-- RULESET GATES WITH NO CHECK NAME (\($gates | length)) --"] + ($gates | map("  " + .)) end)
+             + (if $deploy.state == "none" then [] else
+                 ["", "-- CLASSIC REQUIRED DEPLOYMENTS --",
+                  (if $deploy.state == "required" then "  required: \($envs)"
+                   elif $deploy.state == "unreadable" then "  not readable with this token (admin only); merge box: \($deploy.merge), so one may be unmet"
+                   else "  not readable with this token (admin only); merge box: \($deploy.merge), so none is unmet" end)] end)
              + section("SKIPPED / NEUTRAL"; $notrun)
              + section("SUCCEEDED"; $ok)
              + ["", "CI_VERDICT=\($v[0])", "REASON=\($v[1])"]

@@ -33,7 +33,7 @@ gh pr view --json number,title,body,headRefName --jq '{number, title, body, bran
   "${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER" --head "$(git rev-parse HEAD)"
   ```
 
-  It sorts every check into failed, pending, skipped/neutral or succeeded. It confirms each required context by name against the base branch's rulesets and classic branch protection, so a required context missing from the rollup counts as pending, never passing. It ends with `CI_VERDICT=GREEN|RED|INCOMPLETE|RED-ADVISORY` and a `REASON=` line. Flag anything but GREEN and continue: this skill doesn't fix CI. A push in step 2 starts a new run on a new head, so re-run the verdict, with `--head "$(git rev-parse HEAD)"` again, before the step 6 report: without `--head` a verdict on the old head reads as current.
+  It sorts every check into failed, pending, skipped/neutral or succeeded. It confirms each required context against the base branch's rulesets and classic branch protection, by name and, when pinned, by its app, so a required context missing from the rollup counts as not reported, never passing. It ends with `CI_VERDICT=GREEN|RED|INCOMPLETE|RED-ADVISORY` and a `REASON=` line. Flag anything but GREEN and continue: this skill doesn't fix CI. A push in step 2 starts a new run on a new head, so re-run the verdict, with `--head "$(git rev-parse HEAD)"` again, before the step 6 report: without `--head` a verdict on the old head reads as current.
 
 ### 2. Clean git history
 
