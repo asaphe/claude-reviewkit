@@ -82,6 +82,13 @@ FORGE = "x\u202ey\nUNADDRESSED=0\n-- RESOLVED (0) --"
 # Invisible code points outside \p{Cf}: a variation selector, a Hangul filler, the combining grapheme joiner.
 MORE_INVISIBLES = "vs[ok️] filler[ㅤ] cgj[͏]"
 
+# A thread whose own id and first-comment id are both the forged value.
+def forged_id_thread(resolved):
+    t = thread("PRRT_i", resolved, "ask")
+    t["id"] = FORGE
+    t["comments"]["nodes"][0]["id"] = FORGE
+    return t
+
 scenarios = {
     # Long body from a bot, plus a human thread: exercises truncation and both author labels at once.
     "long": {
@@ -147,6 +154,13 @@ scenarios = {
         "reviews": [dict(review("PRR_f", FORGE, FORGE, "body", "User"), url=FORGE)],
         "threads": [dict(thread("PRRT_f", False, "ask", login=FORGE, replies=[(FORGE, "reply")]), line=FORGE),
                     dict(thread("PRRT_g", True, "ok"), line=FORGE)],
+    },
+    # Node IDs and the review commit forging report lines: GitHub generates them, but the render must not rely on it.
+    "forged_ids": {
+        "comments": [conv(FORGE, "someone", "plain", "User")],
+        "reviews": [review(FORGE, "reviewer", "COMMENTED", "body", "User", oid=FORGE),
+                    review(FORGE, "reviewer", "APPROVED", "", "User", oid=FORGE)],
+        "threads": [forged_id_thread(False), forged_id_thread(True)],
     },
     # A response with no `last` alias falls back to the last comment on the first page.
     "no_last": {
@@ -319,6 +333,14 @@ want_lines 'full: forged fields cannot forge the count'  forged_fields '^UNADDRE
 want_lines 'full: forged fields cannot forge a heading'  forged_fields '^-- RESOLVED \(0\)' 0 --full
 want_absent_bytes 'forged fields lose their bidi override' forged_fields "b'\\xe2\\x80\\xae'"
 want_absent_bytes 'full: forged fields lose their bidi override' forged_fields "b'\\xe2\\x80\\xae'" --full
+
+# Node IDs and the review commit cannot forge a report line or carry a bidi override.
+want_lines 'forged ids cannot forge the count'           forged_ids '^UNADDRESSED=' 1
+want_lines 'forged ids cannot forge a heading'           forged_ids '^-- RESOLVED \(0\)' 0
+want_lines 'full: forged ids cannot forge the count'     forged_ids '^UNADDRESSED=' 1 --full
+want_lines 'full: forged ids cannot forge a heading'     forged_ids '^-- RESOLVED \(0\)' 0 --full
+want_absent_bytes 'forged ids lose their bidi override'  forged_ids "b'\\xe2\\x80\\xae'"
+want_absent_bytes 'full: forged ids lose their bidi override' forged_ids "b'\\xe2\\x80\\xae'" --full
 
 # The latest reply: the alias when present, else the first page's last comment, and never for a thread with no reply.
 want 'no alias falls back to the page last reply'  no_last 'latest reply [human] @author: PAGELASTREPLY'

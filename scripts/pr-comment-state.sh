@@ -142,11 +142,11 @@ RESULT="$(jq -n \
   # Full bodies keep their line breaks; the prefix stops a body line passing for a report line.
   def block(s): ((s // "") | gsub("\r\n?";"\n") | split("\n") | map("      | " + scrub(.)) | join("\n"));
   # The full SHA: after a force-push only a full one can still be fetched from the PR ref.
-  def sha(c): if (c.oid // "") == "" then "" else "  @\(c.oid)" end;
+  def sha(c): if (c.oid // "") == "" then "" else "  @\(if (c.oid | type) == "string" and (c.oid | test("^([0-9a-f]{40}|[0-9a-f]{64})$")) then c.oid else "?" end)" end;
 
   ($threads[0] | map({
-     tid: .id,
-     cid: ((.comments.nodes[0].id) // ""),
+     tid: scrub(.id),
+     cid: scrub(.comments.nodes[0].id),
      isResolved, isOutdated,
      path: scrub(.path), line: scrub(.line // "?" | tostring),
      total: (.comments.totalCount // 0),
@@ -161,7 +161,7 @@ RESULT="$(jq -n \
      latest: (.last.nodes[0] // (.comments.nodes // [])[-1] // null)
    })) as $T |
   ($reviews[0] | map({
-     rid: .id,
+     rid: scrub(.id),
      author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
      state: scrub(.state), isMinimized, body: (.body // ""), url: scrub(.url), commit: (.commit // {})
@@ -172,7 +172,7 @@ RESULT="$(jq -n \
    | .needs_minimize = ((.actionable | not) and (.state == "DISMISSED")
                         and .has_content and (.isMinimized == false)))) as $R |
   ($conv[0] | map({
-     cid: .id,
+     cid: scrub(.id),
      author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
      body: (.body // ""), url: scrub(.url), isMinimized
