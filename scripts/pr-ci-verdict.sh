@@ -235,14 +235,20 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
       outcome: outcome
     } | .required = (.name as $n | $req | index($n) != null) ] as $C |
   [ $pinned[] | . as $p | {name: scrub(.context), app} + (
-      # The app own entries: every check run, plus its latest status (the list is newest first).
-      (.runs + ([.statuses[] | select(.app == $p.app)] | .[:1])) as $mine |
-      [.statuses[] | select(.app == null) | "@" + scrub(.login)] as $unproven |
-      if ($mine | length) > 0 then ($mine | min_by(bucket | rank) | {bucket: bucket, outcome: outcome})
-      elif ($unproven | length) > 0 then
-        {bucket: "unverified", outcome: "reported as a commit status by \($unproven | unique | join(", ")), which this script cannot attribute to app \(.app) — confirm in the merge box"}
+      # GitHub refuses the merge while another source holds the latest status of the context (the list is newest first).
+      (.statuses[:1]) as $latest |
+      (.runs + ($latest | map(select(.app == $p.app)))) as $mine |
+      ($latest | map(select(.app != $p.app))) as $other |
+      [$mine[] | select(bucket == "failed")] as $mineFailed |
+      if ($other | length) > 0 and ($other[0] | bucket) == "failed" then
+        {bucket: "failed", outcome: "\($other[0] | outcome) set by @\(scrub($other[0].login)), not app \($p.app)"}
+      elif ($other | length) > 0 and ($mineFailed | length) > 0 then
+        ($mineFailed[0] | {bucket: bucket, outcome: outcome})
+      elif ($other | length) > 0 then
+        {bucket: "unverified", outcome: "the latest status was set by @\(scrub($other[0].login))\(if ($other[0].app | type) == "number" then " (app \($other[0].app))" else "" end), not app \($p.app), and GitHub refuses the merge while another source holds a pinned status — confirm in the merge box"}
+      elif ($mine | length) > 0 then ($mine | min_by(bucket | rank) | {bucket: bucket, outcome: outcome})
       else
-        {bucket: "missing", outcome: "not reported by app \(.app)\(if (.statuses | length) > 0 then " (a commit status from app \([.statuses[].app] | unique | map(tostring) | join(", ")) does not count)" else "" end)"}
+        {bucket: "missing", outcome: "not reported by app \($p.app)"}
       end) ] as $P |
   ($P | map(select(.bucket == "failed")))                      as $pinFailed |
   ($P | map(select(.bucket != "failed" and .bucket != "success"))) as $pinOpen |

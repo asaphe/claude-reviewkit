@@ -179,8 +179,19 @@ scenarios = {
     "pin_status_user":  ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
     # A bot whose app this token cannot look up (a private app).
     "pin_status_private": ([ctx("ext-ci", "SUCCESS")],                     [[ruleset("ext-ci", app=12345)]], branch()),
-    # Newest first: a user's later success does not hide the app's own failure.
-    "pin_status_mixed": ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
+    # Newest first: the latest status for the context is another source's failure.
+    "pin_status_latest_other_failed": ([ctx("ext-ci", "FAILURE")],         [[ruleset("ext-ci", app=12345)]], branch()),
+    # Newest first: a user's later success supersedes the app's older failure, and GitHub refuses the merge on the user's status.
+    "pin_status_user_over_app_failure": ([ctx("ext-ci", "SUCCESS")],       [[ruleset("ext-ci", app=12345)]], branch()),
+    # Newest first: success from a user, then success from the app; the rollup shows the user's.
+    "pin_status_only_user_plus_app_older": ([ctx("ext-ci", "SUCCESS")],    [[ruleset("ext-ci", app=12345)]], branch()),
+    # The app's own check run passed, and the context's latest status is a user's success.
+    "pin_runs_ok_user_status_ok": ([run("ext-ci", "SUCCESS"), ctx("ext-ci", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    # The app's own check run failed, and the context's latest status is a user's success.
+    "pin_runs_failed_user_status_ok": ([run("ext-ci", "FAILURE"), ctx("ext-ci", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    # A same-named check run from an app other than the pinned one fails: no status holds the context.
+    "pin_other_app_run_fails": ([run("ext-ci", "SUCCESS", workflow=""), run("ext-ci", "FAILURE", workflow="Other")],
+                                [[ruleset("ext-ci", app=12345)]], branch()),
     # The app's status is on the second page of statuses.
     "pin_status_paged": ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
     "pin_status_fail_api": ([ctx("ext-ci", "SUCCESS")],                    [[ruleset("ext-ci", app=12345)]], branch()),
@@ -226,6 +237,9 @@ check_runs = {
                      app_run("ext-ci", 12345, "success", started="2026-10-01T10:01:00Z")],
     "pin_paged":    [app_run("ext-ci", 12345, "success"), app_run("ext-ci", 12345, "failure")],
     "pin_other_fails": [app_run("ext-ci", 12345, "success")],
+    "pin_runs_ok_user_status_ok": [app_run("ext-ci", 12345, "success")],
+    "pin_runs_failed_user_status_ok": [app_run("ext-ci", 12345, "failure")],
+    "pin_other_app_run_fails": [app_run("ext-ci", 12345, "success")],
     "pin_classic_other_fails": [app_run("build", 15368, "success")],
     "pin_tab_name": [app_run("ext\tci", 12345, "success")],
     "pin_backslash_name": [app_run("ext\\ci", 12345, "success")],
@@ -238,9 +252,16 @@ statuses = {
     "pin_status_app_failed": [[status("ext-ci", "failure", "ext-ci-app[bot]")]],
     "pin_status_user":       [[status("ext-ci", "success", "someone", kind="User")]],
     "pin_status_private":    [[status("ext-ci", "success", "private-ci[bot]")]],
-    "pin_status_mixed":      [[status("ext-ci", "success", "someone", kind="User"),
-                               status("ext-ci", "failure", "ext-ci-app[bot]"),
-                               status("ext-ci", "pending", "ext-ci-app[bot]")]],
+    "pin_status_latest_other_failed": [[status("ext-ci", "failure", "someone", kind="User"),
+                                        status("ext-ci", "success", "ext-ci-app[bot]"),
+                                        status("ext-ci", "pending", "ext-ci-app[bot]")]],
+    "pin_status_user_over_app_failure": [[status("ext-ci", "success", "someone", kind="User"),
+                                          status("ext-ci", "failure", "ext-ci-app[bot]"),
+                                          status("ext-ci", "pending", "ext-ci-app[bot]")]],
+    "pin_status_only_user_plus_app_older": [[status("ext-ci", "success", "someone", kind="User"),
+                                             status("ext-ci", "success", "ext-ci-app[bot]")]],
+    "pin_runs_ok_user_status_ok": [[status("ext-ci", "success", "someone", kind="User")]],
+    "pin_runs_failed_user_status_ok": [[status("ext-ci", "success", "someone", kind="User")]],
     "pin_status_paged":      [[status("other", "success", "other-ci[bot]")],
                               [status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_status_fail_api":   [[status("ext-ci", "success", "ext-ci-app[bot]")]],
@@ -399,25 +420,34 @@ want      'an in-progress row shows its status'      in_progress      'build (CI
 
 # Classic checks[] and source pins.
 want      'classic checks[] is required too'         classic_checks   'required not reported: build'
-want      'a pinned check from another source is not reported' pin_other_source 'not reported by app 12345'
+want      'a pinned status from another app is unverified' pin_other_source 'GitHub refuses the merge while another source holds a pinned status'
 want_not  'a pinned check from another source is not GREEN' pin_other_source 'CI_VERDICT=GREEN'
 want      'a pinned check from its app counts'       pin_ok           'CI_VERDICT=GREEN'
 want      'the pinned app failing is RED'            pin_failed       'CI_VERDICT=RED'
 want      'a classic app_id pin is checked'          pin_classic      'CI_VERDICT=GREEN'
 want_exit 'an unreadable pinned lookup exits 1'      pin_fail_api     1
 want_not  'an unreadable pinned lookup prints no verdict' pin_fail_api 'CI_VERDICT='
-want      'a status from another app names that app' pin_other_source 'a commit status from app 999 does not count'
+want      'a status from another app names that app' pin_other_source 'set by @other-ci[bot] (app 999), not app 12345'
 want      'the pinned app failing in one run is RED' pin_two_runs     'CI_VERDICT=RED'
 want      'every page of pinned runs is read'        pin_paged        'CI_VERDICT=RED'
 
 # A pinned app can report through commit statuses; only its own bot proves the source.
 want      'a status from the pinned app counts'      pin_status_app   'CI_VERDICT=GREEN'
 want      'a failing status from the pinned app is RED' pin_status_app_failed 'CI_VERDICT=RED'
-want      'a status under a user token is unproven'  pin_status_user  'which this script cannot attribute to app 12345'
+want      'a status under a user token is unverified' pin_status_user  'the latest status was set by @someone, not app 12345'
 want_not  'a status under a user token is not GREEN' pin_status_user  'CI_VERDICT=GREEN'
 want_not  'a status under a user token is not called unreported' pin_status_user 'not reported by app 12345'
-want      'a bot with no visible app is unproven'    pin_status_private 'by @private-ci[bot], which this script cannot attribute'
-want      'the app latest status counts, not a user one' pin_status_mixed 'CI_VERDICT=RED'
+want      'a bot with no visible app is unverified'  pin_status_private 'the latest status was set by @private-ci[bot], not app 12345'
+want_not  'a bot with no visible app shows no app id' pin_status_private '@private-ci[bot] (app'
+want_lines 'a failing latest status from another source is RED' pin_status_latest_other_failed '^CI_VERDICT=RED$' 1
+want      'the failing latest status names its source' pin_status_latest_other_failed 'required check failed: ext-ci (app 12345)'
+want      'a newer user status supersedes the app older failure' pin_status_user_over_app_failure 'CI_VERDICT=INCOMPLETE'
+want_not  'a newer user status leaves no RED from the app older failure' pin_status_user_over_app_failure 'CI_VERDICT=RED'
+want      'a user status over the app older success is INCOMPLETE' pin_status_only_user_plus_app_older 'CI_VERDICT=INCOMPLETE'
+want      'a user status over the app older success says why' pin_status_only_user_plus_app_older 'GitHub refuses the merge while another source holds a pinned status'
+want      'the app check run plus a user status is INCOMPLETE' pin_runs_ok_user_status_ok 'CI_VERDICT=INCOMPLETE'
+want_lines 'the app failing check run outranks a user status' pin_runs_failed_user_status_ok '^CI_VERDICT=RED$' 1
+want      'a same-named failing run from another app is advisory' pin_other_app_run_fails 'CI_VERDICT=RED-ADVISORY'
 want      'every page of statuses is read'           pin_status_paged 'CI_VERDICT=GREEN'
 want_exit 'an unreadable statuses lookup exits 1'    pin_status_fail_api 1
 want_not  'an unreadable statuses lookup prints no verdict' pin_status_fail_api 'CI_VERDICT='
@@ -425,9 +455,9 @@ want_exit 'a failed app lookup (not a 404) exits 1'  pin_apps_fail    1
 want_not  'a failed app lookup prints no verdict'    pin_apps_fail    'CI_VERDICT='
 want      'a failed app lookup names the app'        pin_apps_fail    "could not look up app 'ext-ci-app' for required 'ext-ci'"
 
-# A failure the pin excludes is a non-required failure, not a failed requirement.
-want      'an excluded source failing is advisory'   pin_other_fails  'CI_VERDICT=RED-ADVISORY'
-want      'an excluded source failing is advisory (classic)' pin_classic_other_fails 'CI_VERDICT=RED-ADVISORY'
+# A latest status from a source the pin excludes fails the requirement: GitHub refuses the merge.
+want      'a failing user status over the app check run is RED' pin_other_fails  'required check failed: ext-ci (app 12345)'
+want      'a failing latest status from another app is RED (classic)' pin_classic_other_fails 'required check failed: build (app 15368)'
 
 # Pinned names reach the API byte for byte.
 want      'a tab in a pinned name survives'          pin_tab_name     'CI_VERDICT=GREEN'
