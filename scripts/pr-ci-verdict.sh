@@ -21,10 +21,11 @@ re-run replaces its failed attempt there. Same-named entries that remain come
 from separate runs (a push run and a pull_request run, say): the worst counts.
 
 A required context pinned to an app (ruleset integration_id, classic
-checks[].app_id) counts only from that app: its check runs, or a commit status
-whose creator is the app's bot. A status posted with a user's token names the
-user, and a private app's bot cannot be looked up, so neither proves its app:
-INCOMPLETE.
+checks[].app_id) counts only from that app: its check runs, or the context's
+latest commit status when the app's bot set it. GitHub refuses the merge while
+another source holds that latest status, so a status set by a user's token, by
+another app, or by a private app's bot this token cannot look up reads
+INCOMPLETE, or RED when it failed.
 
 Classic protection's "Require deployments to succeed" names no check, and only
 a repo admin can read it. Without admin access it is treated as possibly set
@@ -38,9 +39,10 @@ Verdict (CI_VERDICT= line, then REASON=):
                 when pinned), or reported skipped/neutral (passes the gate,
                 proves nothing ran); no checks at all, or none that succeeded;
                 a gate no check name maps to (ruleset required workflows, code
-                scanning or deployments; classic required deployments, set or
-                unreadable while the PR is not mergeable): confirm in the merge
-                box; a moved head
+                scanning, code quality, code coverage, license compliance or
+                deployments; classic required deployments, set or unreadable
+                while the PR is not mergeable): confirm in the merge box; a
+                moved head
   RED-ADVISORY  only non-required checks failed and no such gate exists;
                 still not green
 
@@ -274,7 +276,7 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
                         (if ($reqNotRun | length) > 0 then "required skipped/neutral: \($reqNotRun | join(", "))" else empty end),
                         ($pinOpen[] | "required \(.name) \(if .bucket == "missing" or .bucket == "unverified" then .outcome else "from app \(.app): \(.outcome)" end)")
                       ] | join("; "))]
-    # A required workflow, code-scanning result or deployment names no status check, so a failure under one is not advisory.
+    # A ruleset gate (required workflows, code scanning, code quality, code coverage, license compliance, deployments) names no status check, so a failure under one is not advisory.
     elif ($gates | length) > 0 or IN($deploy.state; "required", "unreadable") then
       ["INCOMPLETE", ([ (if ($gates | length) > 0 then "ruleset also gates on \($gates | join(", ")), which no check name in the rollup maps to" else empty end),
                         (if $deploy.state == "required" then "classic protection requires deployments to \($envs), which no check name maps to" else empty end),
