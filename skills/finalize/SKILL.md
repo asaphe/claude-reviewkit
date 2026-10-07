@@ -27,14 +27,13 @@ gh pr view --json number,title,body,headRefName --jq '{number, title, body, bran
 
 - `git fetch origin main`, then `git diff origin/main...HEAD --stat` for the full changed-file list (use `origin/main`, not local `main`, which can lag).
 - Read the PR's current body.
-- Check CI status via the check-runs rollup, not `gh pr checks` — that command renders only the checks that have *reported*, so a job still queued is absent from the table rather than listed as pending, and a partial run reads as a complete green one:
+- Check CI from the check-runs rollup, not `gh pr checks`. That command renders only the checks that have *reported*: a job still queued is missing from the table rather than listed as pending, so a partial run reads as a complete green one.
 
   ```bash
-  gh pr view "$PR_NUMBER" --repo "$REPO" --json statusCheckRollup \
-    --jq '.statusCheckRollup[] | "\(.name // .context): \(.status // "COMPLETED")/\(if (.conclusion // .state // "") == "" then "PENDING" else (.conclusion // .state) end)"'
+  "${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER"
   ```
 
-  Classify every row into one of six buckets — success, failure, cancelled, skipped, pending, and *not reported at all* — and confirm each required context by name against branch protection (`gh api "repos/$REPO/branches/main/protection" --jq '.required_status_checks.contexts[]'`). A required context missing from the rollup is pending, never passing. Flag failures and pending checks but continue — this skill doesn't fix CI.
+  It sorts every check into failed, pending, skipped/neutral or succeeded. It confirms each required context by name against the base branch's rulesets and classic branch protection, so a required context missing from the rollup counts as pending, never passing. It ends with `CI_VERDICT=GREEN|RED|INCOMPLETE|RED-ADVISORY` and a `REASON=` line. Flag anything but GREEN and continue: this skill doesn't fix CI. A push in step 2 starts a new run, so re-run the verdict before the step 6 report.
 
 ### 2. Clean git history
 
@@ -84,8 +83,10 @@ Rewrite to reflect the **final** state of all changes, not just the last commit:
 ### 4. Review open PR comments
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/pr-comment-state.sh" "$PR_NUMBER"
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-comment-state.sh" "$PR_NUMBER" --full
 ```
+
+`--full` prints every item untruncated, closed and minimized ones included. "Addressed" is a claim about a body you have to read, not one you can judge from a 200-character snippet or a resolved flag.
 
 Report — do not fix code or resolve threads here:
 - How many comments total.
@@ -104,7 +105,7 @@ Check whether the PR adds any new tool, API, config option, or user-facing behav
 ```text
 PR #{pr_number} finalized:
 - Git history: N commits (squashed / kept as-is)
-- CI status: {summary}
+- CI: {CI_VERDICT} — {REASON} (head {sha})
 - Comments: {addressed} addressed, {open} need attention, {bot} bot noise
 - Doc gaps: {list or "none"}
 ```

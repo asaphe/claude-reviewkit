@@ -11,8 +11,15 @@ Portable, evidence-based PR review for any repo — a Claude Code plugin. Two-pa
 
 ## Usage
 
-- `/reviewkit:review [PR#]` — two-pass review. Dispatches two bundled reviewer personas in parallel (`security-lens`, `systemic-patterns-lens`), verifies every finding with an Evidence block before it's presented, runs a mandatory adversarial pass, and optionally posts to the PR.
+- `/reviewkit:review [PR#]` — two-pass review. Dispatches two bundled reviewer personas in parallel (`security-lens`, `systemic-patterns-lens`), verifies every finding with an Evidence block before it's presented, runs a mandatory adversarial pass, and optionally posts to the PR. On a re-review it re-checks each earlier finding at the new head and scopes the new pass to what changed since.
 - `/reviewkit:finalize [PR#]` — squash noisy history, rewrite the PR body to reflect final state, sweep and report on open comments, check for doc gaps.
+
+## Re-reviews, feedback and CI
+
+- **Re-review continuity.** Each earlier review shows the commit it was submitted against. A re-review diffs from that commit to the new head and gives every earlier finding one status: fixed, still open, regressed or disproved. The status comes from re-running the check, never from the author's reply. Only a new head earns a re-review; CI finishing or an edited description does not.
+- **Full feedback inventory.** `scripts/pr-comment-state.sh` sweeps conversation comments, review bodies and inline threads (replies included), fully paginated. Bot and human authors are labelled, and comment bodies are scrubbed of invisible and bidi characters. `--full` prints every item untruncated, resolved, dismissed and minimized ones included, so a claim is judged on its whole text.
+- **CI verdict.** `scripts/pr-ci-verdict.sh` reads the head's `statusCheckRollup` and checks it against the required contexts from rulesets and classic branch protection. It returns GREEN, RED, INCOMPLETE or RED-ADVISORY. A pending check, an unreported required check, or a required check that was skipped is never green, and neither is a head that moved after review.
+- **Review the solution.** Each reviewer returns a result for four dimensions: correctness and security, naming and organization, simplicity and efficiency, reuse and conventions. A dimension with no result counts as not covered, not as clean.
 
 ## Why this exists
 

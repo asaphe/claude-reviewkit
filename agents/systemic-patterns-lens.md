@@ -119,6 +119,7 @@ Concrete instances: a Claude Code hook writing advisory text to stderr then `exi
 
 **Files reviewed:** [{path1}, {path2}, ...]
 **Patterns scanned:** 10/10
+**Review-the-solution coverage:** correctness/security: {finding | clear | not_applicable — evidence or reason}; naming/organization: {…}; simplicity/efficiency: {…}; reuse/conventions: {…}
 **Overall confidence:** {0-100}
 **Findings dropped for insufficient evidence:** {count}
 
