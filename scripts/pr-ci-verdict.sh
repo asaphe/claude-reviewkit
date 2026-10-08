@@ -242,12 +242,13 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
       (.runs + ($latest | map(select(.app == $p.app)))) as $mine |
       ($latest | map(select(.app != $p.app))) as $other |
       [$mine[] | select(bucket == "failed")] as $mineFailed |
+      ($other[:1] | map("latest status from @\(scrub(.login))\(if (.app | type) == "number" then " (app \(.app))" else "" end) instead of app \($p.app)") | first // "") as $from |
       if ($other | length) > 0 and ($other[0] | bucket) == "failed" then
-        {bucket: "failed", outcome: "\($other[0] | outcome) set by @\(scrub($other[0].login)), not app \($p.app)"}
+        {bucket: "failed", outcome: ($other[0] | outcome), from: $from}
       elif ($other | length) > 0 and ($mineFailed | length) > 0 then
         ($mineFailed[0] | {bucket: bucket, outcome: outcome})
       elif ($other | length) > 0 then
-        {bucket: "unverified", outcome: "the latest status was set by @\(scrub($other[0].login))\(if ($other[0].app | type) == "number" then " (app \($other[0].app))" else "" end), not app \($p.app), and GitHub refuses the merge while another source holds a pinned status — confirm in the merge box"}
+        {bucket: "unverified", outcome: "has its \($from), so GitHub refuses the merge — confirm in the merge box"}
       elif ($mine | length) > 0 then ($mine | min_by(bucket | rank) | {bucket: bucket, outcome: outcome})
       else
         {bucket: "missing", outcome: "not reported by app \($p.app)"}
@@ -267,7 +268,7 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
   ( if $moved then
       ["INCOMPLETE", "head moved: reviewed \($want), PR is now at \($head[0:12]) — re-run against the new head"]
     elif ($failedReq | length) > 0 or ($pinFailed | length) > 0 then
-      ["RED", "required check failed: \(($failedReq | map(.name)) + ($pinFailed | map("\(.name) (app \(.app))")) | unique | join(", "))"]
+      ["RED", "required check failed: \(($failedReq | map(.name)) + ($pinFailed | map("\(.name) (\(.from // "app \(.app)"))")) | unique | join(", "))"]
     elif ($C | length) == 0 then
       ["INCOMPLETE", "no checks reported on \($head[0:12])"]
     elif ($pending | length) > 0 or ($missing | length) > 0 or ($reqNotRun | length) > 0 or ($pinOpen | length) > 0 then

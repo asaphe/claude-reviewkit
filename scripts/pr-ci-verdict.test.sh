@@ -435,31 +435,33 @@ want      'an in-progress row shows its status'      in_progress      'build (CI
 
 # Classic checks[] and source pins.
 want      'classic checks[] is required too'         classic_checks   'required not reported: build'
-want      'a pinned status from another app is unverified' pin_other_source 'GitHub refuses the merge while another source holds a pinned status'
+want      'a pinned status from another app is unverified' pin_other_source 'instead of app 12345, so GitHub refuses the merge — confirm in the merge box'
 want_not  'a pinned check from another source is not GREEN' pin_other_source 'CI_VERDICT=GREEN'
 want      'a pinned check from its app counts'       pin_ok           'CI_VERDICT=GREEN'
 want      'the pinned app failing is RED'            pin_failed       'CI_VERDICT=RED'
+want      'the pinned app failing names the app'     pin_failed       'required check failed: ext-ci (app 12345)'
 want      'a classic app_id pin is checked'          pin_classic      'CI_VERDICT=GREEN'
 want_exit 'an unreadable pinned lookup exits 1'      pin_fail_api     1
 want_not  'an unreadable pinned lookup prints no verdict' pin_fail_api 'CI_VERDICT='
-want      'a status from another app names that app' pin_other_source 'set by @other-ci[bot] (app 999), not app 12345'
+want      'a status from another app names that app' pin_other_source 'required ext-ci has its latest status from @other-ci[bot] (app 999) instead of app 12345'
 want      'the pinned app failing in one run is RED' pin_two_runs     'CI_VERDICT=RED'
 want      'every page of pinned runs is read'        pin_paged        'CI_VERDICT=RED'
 
 # A pinned app can report through commit statuses; only its own bot proves the source.
 want      'a status from the pinned app counts'      pin_status_app   'CI_VERDICT=GREEN'
 want      'a failing status from the pinned app is RED' pin_status_app_failed 'CI_VERDICT=RED'
-want      'a status under a user token is unverified' pin_status_user  'the latest status was set by @someone, not app 12345'
+want      'a status under a user token is unverified' pin_status_user  'required ext-ci has its latest status from @someone instead of app 12345'
 want_not  'a status under a user token is not GREEN' pin_status_user  'CI_VERDICT=GREEN'
 want_not  'a status under a user token is not called unreported' pin_status_user 'not reported by app 12345'
-want      'a bot with no visible app is unverified'  pin_status_private 'the latest status was set by @private-ci[bot], not app 12345'
+want      'a bot with no visible app is unverified'  pin_status_private 'required ext-ci has its latest status from @private-ci[bot] instead of app 12345'
 want_not  'a bot with no visible app shows no app id' pin_status_private '@private-ci[bot] (app'
 want_lines 'a failing latest status from another source is RED' pin_status_latest_other_failed '^CI_VERDICT=RED$' 1
-want      'the failing latest status names its source' pin_status_latest_other_failed 'required check failed: ext-ci (app 12345)'
+want      'the failing latest status names its source' pin_status_latest_other_failed 'required check failed: ext-ci (latest status from @someone instead of app 12345)'
 want      'a newer user status supersedes the app older failure' pin_status_user_over_app_failure 'CI_VERDICT=INCOMPLETE'
 want_not  'a newer user status leaves no RED from the app older failure' pin_status_user_over_app_failure 'CI_VERDICT=RED'
 want      'a user status over the app older success is INCOMPLETE' pin_status_only_user_plus_app_older 'CI_VERDICT=INCOMPLETE'
-want      'a user status over the app older success says why' pin_status_only_user_plus_app_older 'GitHub refuses the merge while another source holds a pinned status'
+want      'a user status over the app older success says why' pin_status_only_user_plus_app_older 'instead of app 12345, so GitHub refuses the merge — confirm in the merge box'
+want_not  'an unverified pin adds no separator of its own' pin_status_only_user_plus_app_older 'app 12345; '
 want      'the app check run plus a user status is INCOMPLETE' pin_runs_ok_user_status_ok 'CI_VERDICT=INCOMPLETE'
 want_lines 'the app failing check run outranks a user status' pin_runs_failed_user_status_ok '^CI_VERDICT=RED$' 1
 want      'a same-named failing run from another app is advisory' pin_other_app_run_fails 'CI_VERDICT=RED-ADVISORY'
@@ -473,8 +475,9 @@ want_not  'a failed app lookup prints no verdict'    pin_apps_fail    'CI_VERDIC
 want      'a failed app lookup names the app'        pin_apps_fail    "could not look up app 'ext-ci-app' for required 'ext-ci'"
 
 # A latest status from a source the pin excludes fails the requirement: GitHub refuses the merge.
-want      'a failing user status over the app check run is RED' pin_other_fails  'required check failed: ext-ci (app 12345)'
-want      'a failing latest status from another app is RED (classic)' pin_classic_other_fails 'required check failed: build (app 15368)'
+want      'a failing user status over the app check run is RED' pin_other_fails  'required check failed: ext-ci (latest status from @someone instead of app 12345)'
+want      'a failing latest status from another app is RED (classic)' pin_classic_other_fails 'required check failed: build (latest status from @other-ci[bot] (app 999) instead of app 15368)'
+want      'the app failing check run under a user status names the app' pin_runs_failed_user_status_ok 'required check failed: ext-ci (app 12345)'
 
 # Pinned names reach the API byte for byte.
 want      'a tab in a pinned name survives'          pin_tab_name     'CI_VERDICT=GREEN'
