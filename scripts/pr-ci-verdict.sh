@@ -241,8 +241,8 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
       outcome: outcome
     } | .required = (.raw as $n | $req | index($n) != null) ] as $C |
   [ $pinned[] | . as $p | {name: scrub(.context), app} + (
-      # GitHub refuses the merge while another source holds the latest status of the context (the list is newest first).
-      (.statuses[:1]) as $latest |
+      # .statuses holds only the latest status of the context; GitHub refuses the merge while another source holds it.
+      .statuses as $latest |
       (.runs + ($latest | map(select(.app == $p.app)))) as $mine |
       ($latest | map(select(.app != $p.app))) as $other |
       [$mine[] | select(bucket == "failed")] as $mineFailed |
