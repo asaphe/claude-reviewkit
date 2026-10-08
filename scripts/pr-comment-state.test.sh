@@ -162,6 +162,12 @@ scenarios = {
                     review(FORGE, "reviewer", "APPROVED", "", "User", oid=FORGE)],
         "threads": [forged_id_thread(False), forged_id_thread(True)],
     },
+    # A valid OID plus one trailing newline: jq's `$` also matches before a final newline.
+    "oid_newline": {
+        "comments": [],
+        "reviews": [review("PRR_n", "reviewer", "APPROVED", "", "User", minimized=True, oid="a" * 40 + "\n")],
+        "threads": [],
+    },
     # A response with no `last` alias falls back to the last comment on the first page.
     "no_last": {
         "comments": [],
@@ -339,6 +345,8 @@ want_lines 'forged ids cannot forge the count'           forged_ids '^UNADDRESSE
 want_lines 'forged ids cannot forge a heading'           forged_ids '^-- RESOLVED \(0\)' 0
 want_lines 'full: forged ids cannot forge the count'     forged_ids '^UNADDRESSED=' 1 --full
 want_lines 'full: forged ids cannot forge a heading'     forged_ids '^-- RESOLVED \(0\)' 0 --full
+want_lines 'an OID with a trailing newline cannot split its line' oid_newline '^ \(minimized\)' 0
+want_lines 'full: an OID with a trailing newline cannot split its line' oid_newline '^ \(minimized\)' 0 --full
 want_absent_bytes 'forged ids lose their bidi override'  forged_ids "b'\\xe2\\x80\\xae'"
 want_absent_bytes 'full: forged ids lose their bidi override' forged_ids "b'\\xe2\\x80\\xae'" --full
 

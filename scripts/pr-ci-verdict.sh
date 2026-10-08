@@ -23,9 +23,10 @@ from separate runs (a push run and a pull_request run, say): the worst counts.
 A required context pinned to an app (ruleset integration_id, classic
 checks[].app_id) counts only from that app: its check runs, or the context's
 latest commit status when the app's bot set it. GitHub refuses the merge while
-another source holds that latest status, so a status set by a user's token, by
-another app, or by a private app's bot this token cannot look up reads
-INCOMPLETE, or RED when it failed.
+another source holds that latest status, so a status set by a user's token or
+by another app reads INCOMPLETE, or RED when it failed. So does one set by a
+private app's bot this token cannot look up, or by a deleted account: the
+script cannot tell whether that is the pinned app.
 
 Classic protection's "Require deployments to succeed" names no check, and only
 a repo admin can read it. Without admin access it is treated as possibly set
@@ -176,13 +177,14 @@ while IFS= read -r SPEC; do
       }
       STATUSES="$(jq -s 'add // []' <<<"$STATUSES")" || jq_fail "the commit statuses"
     fi
-    # A status names its creator, not its app; an app's bot is <slug>[bot], and the slug resolves to the app ID.
+    # Only the context's latest status counts (newest first); its creator <slug>[bot] names the app, which the slug resolves to.
     while IFS= read -r SLUG; do
       [[ -n "$SLUG" ]] || continue
       [[ "$(jq --arg s "$SLUG" 'has($s)' <<<"$APP_IDS")" == false ]] || continue
       # A private app is invisible to this token (404): its statuses stay unattributed, never assumed. Any other failure is no answer.
       if APP_OUT="$(gh api "apps/$SLUG" 2>"$APP_ERR")"; then
-        APP_ID="$(jq -r '.id // empty' <<<"$APP_OUT" 2>/dev/null)" || APP_ID=""
+        APP_ID="$(jq -r 'if (.id | type) == "number" and .id > 0 and (.id | floor) == .id then .id else error("no app id") end' <<<"$APP_OUT")" \
+          || jq_fail "the app lookup for '$SLUG'"
       elif grep -q '(HTTP 404)' "$APP_ERR"; then
         APP_ID=""
       else
@@ -191,10 +193,10 @@ while IFS= read -r SPEC; do
       fi
       [[ "$APP_ID" =~ ^[0-9]+$ ]] || APP_ID="null"
       APP_IDS="$(jq --arg s "$SLUG" --argjson id "$APP_ID" '. + {($s): $id}' <<<"$APP_IDS")" || jq_fail "an app lookup"
-    done < <(jq -r --argjson s "$SPEC" '[ .[] | select(.context == $s.context and (.creator.type // "") == "Bot")
+    done < <(jq -r --argjson s "$SPEC" '[ first(.[] | select(.context == $s.context)) | select((.creator.type // "") == "Bot")
       | (.creator.login // "") | select(endswith("[bot]")) | rtrimstr("[bot]") | select(test("^[A-Za-z0-9][A-Za-z0-9-]*$")) ] | unique[]' <<<"$STATUSES")
-    ST="$(jq --argjson s "$SPEC" --argjson ids "$APP_IDS" '[ .[] | select(.context == $s.context) | {
-        __typename: "StatusContext", state: ((.state // "") | ascii_upcase), login: (.creator.login // ""),
+    ST="$(jq --argjson s "$SPEC" --argjson ids "$APP_IDS" '[ first(.[] | select(.context == $s.context)) | {
+        __typename: "StatusContext", state: ((.state // "") | ascii_upcase), login: (.creator.login // ""), kind: (.creator.type // ""),
         app: ((.creator.login // "") as $l
               | if (.creator.type // "") == "Bot" and ($l | endswith("[bot]")) then $ids[$l | rtrimstr("[bot]")] else null end) } ]' <<<"$STATUSES")" \
       || jq_fail "the commit statuses for '$PIN_CTX'"
@@ -204,7 +206,7 @@ while IFS= read -r SPEC; do
 done < <(jq -c '.[] | select(.app != null)' <<<"$REQ_SPECS")
 
 RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pinned "$PINNED" --argjson deploy "$DEPLOY" \
-             --arg want "$WANT_HEAD" --arg pr "$PR_NUMBER" --arg repo "$REPO" '
+             --arg want "$WANT_HEAD" --arg pr "$PR_NUMBER" --arg repo "$REPO" --arg head "$HEAD_SHA" '
   # Check names come from workflow files a PR can edit: strip what reorders an agent-read render.
   def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[\u2028\u2029]";" "));
   def bucket:
@@ -219,36 +221,42 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
         "ACTION_REQUIRED":"failed","STALE":"failed"}
         [(.conclusion // "") | ascii_upcase] // "unknown")
     end;
+  # \A and \z, because `$` also matches before a final newline.
+  def enum: if type == "string" and test("\\A[A-Z_]{1,40}\\z") then . else "?" end;
   # A running check carries conclusion "", which `//` keeps, so the status is read explicitly.
-  def enum: if type == "string" and test("^[A-Z_]{1,40}$") then . else "?" end;
   def outcome: if .__typename == "StatusContext" then ((.state // "?") | enum) elif (.conclusion // "") == "" then ((.status // "?") | enum) else (.conclusion | enum) end;
   # Worst-of across same-named entries: the rollup holds only latest attempts, so each one is a separate run.
   def rank: {"failed":0,"pending":1,"unknown":2,"not_run":3,"success":4}[.];
 
-  ($specs | map(scrub(.context)) | unique) as $allReq |
+  # Names match raw, as GitHub matches them: a scrubbed `lint test` must not meet a required `lint<TAB>test`. Scrub only renders.
+  ($specs | map(.context) | unique) as $allReq |
   # A name required only from a specific app is judged only through that app.
-  ($specs | map(select(.app == null) | scrub(.context)) | unique) as $req |
-  (.headRefOid // "") as $head |
+  ($specs | map(select(.app == null) | .context) | unique) as $req |
   ($want != "" and (($head | ascii_downcase) | startswith($want | ascii_downcase) | not)) as $moved |
   [ (.statusCheckRollup // []) | .[] | {
+      raw: (.name // .context // "?"),
       name: scrub(.name // .context // "?"),
       workflow: scrub(.workflowName // ""),
       bucket: bucket,
       outcome: outcome
-    } | .required = (.name as $n | $req | index($n) != null) ] as $C |
+    } | .required = (.raw as $n | $req | index($n) != null) ] as $C |
   [ $pinned[] | . as $p | {name: scrub(.context), app} + (
       # GitHub refuses the merge while another source holds the latest status of the context (the list is newest first).
       (.statuses[:1]) as $latest |
       (.runs + ($latest | map(select(.app == $p.app)))) as $mine |
       ($latest | map(select(.app != $p.app))) as $other |
       [$mine[] | select(bucket == "failed")] as $mineFailed |
-      ($other[:1] | map("latest status from @\(scrub(.login))\(if (.app | type) == "number" then " (app \(.app))" else "" end) instead of app \($p.app)") | first // "") as $from |
+      # A user, or a bot whose app resolved to another id, is another source; a bot this token cannot look up, or a deleted creator, may be the app.
+      ($other[:1] | map(if .kind == "User" or (.app | type) == "number"
+          then {known: true, from: "latest status from @\(scrub(.login))\(if (.app | type) == "number" then " (app \(.app))" else "" end) instead of app \($p.app)"}
+          else {known: false, from: "latest status from \(if .login == "" then "an unknown creator" else "@\(scrub(.login))" end) that this token cannot attribute to app \($p.app)"} end)
+        | first // {known: false, from: ""}) as $src |
       if ($other | length) > 0 and ($other[0] | bucket) == "failed" then
-        {bucket: "failed", outcome: ($other[0] | outcome), from: $from}
+        {bucket: "failed", outcome: ($other[0] | outcome), from: $src.from}
       elif ($other | length) > 0 and ($mineFailed | length) > 0 then
         ($mineFailed[0] | {bucket: bucket, outcome: outcome})
       elif ($other | length) > 0 then
-        {bucket: "unverified", outcome: "has its \($from), so GitHub refuses the merge — confirm in the merge box"}
+        {bucket: "unverified", outcome: "has its \($src.from)\(if $src.known then ", so GitHub refuses the merge" else "" end) — confirm in the merge box"}
       elif ($mine | length) > 0 then ($mine | min_by(bucket | rank) | {bucket: bucket, outcome: outcome})
       else
         {bucket: "missing", outcome: "not reported by app \($p.app)"}
@@ -259,8 +267,8 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
   ($C | map(select(.bucket == "pending" or .bucket == "unknown"))) as $pending |
   ($C | map(select(.bucket == "not_run")))                     as $notrun |
   ($C | map(select(.bucket == "success")))                     as $ok |
-  ($req | map(. as $n | select([$C[] | select(.name == $n)] | length == 0))) as $missing |
-  ($req | map(. as $n | select(([$C[] | select(.name == $n) | .bucket] | min_by(rank)) == "not_run"))) as $reqNotRun |
+  ($req | map(. as $n | select([$C[] | select(.raw == $n)] | length == 0) | scrub(.))) as $missing |
+  ($req | map(. as $n | select(([$C[] | select(.raw == $n) | .bucket] | min_by(rank)) == "not_run") | scrub(.))) as $reqNotRun |
   ($failed | map(select(.required)))                           as $failedReq |
   ($deploy.envs // [] | map(scrub(.)) | if length == 0 then "environments not listed" else join(", ") end) as $envs |
 
@@ -296,7 +304,7 @@ RESULT="$(jq --argjson specs "$REQ_SPECS" --argjson gates "$GATES" --argjson pin
 
   { verdict: $v[0],
     report: ([ "=== PR #\($pr) — \($repo) — CI verdict ===",
-               "HEAD=\($head)  BASE-REQUIRED=\($allReq | length)\(if ($allReq | length) > 0 then " (\($allReq | join(", ")))" else "" end)",
+               "HEAD=\($head)  BASE-REQUIRED=\($allReq | length)\(if ($allReq | length) > 0 then " (\($allReq | map(scrub(.)) | join(", ")))" else "" end)",
                "ROLLUP: \($C | length) total — \($ok | length) succeeded, \($failed | length) failed/cancelled, \($pending | length) pending, \($notrun | length) skipped/neutral" ]
              + section("FAILED / CANCELLED"; $failed)
              + section("PENDING"; $pending)

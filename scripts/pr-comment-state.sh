@@ -142,7 +142,7 @@ RESULT="$(jq -n \
   # Full bodies keep their line breaks; the prefix stops a body line passing for a report line.
   def block(s): ((s // "") | gsub("\r\n?";"\n") | split("\n") | map("      | " + scrub(.)) | join("\n"));
   # The full SHA: after a force-push only a full one can still be fetched from the PR ref.
-  def sha(c): if (c.oid // "") == "" then "" else "  @\(if (c.oid | type) == "string" and (c.oid | test("^([0-9a-f]{40}|[0-9a-f]{64})$")) then c.oid else "?" end)" end;
+  def sha(c): if (c.oid // "") == "" then "" else "  @\(if (c.oid | type) == "string" and (c.oid | test("\\A([0-9a-f]{40}|[0-9a-f]{64})\\z")) then c.oid else "?" end)" end;
 
   ($threads[0] | map({
      tid: scrub(.id),

@@ -48,6 +48,8 @@ for a in "$@"; do
       pages < "$FIXTURE_DIR/statuses.json"; exit 0 ;;
     apps/*)
       [ -e "$FIXTURE_DIR/apps.fail" ] && { echo "HTTP 502" >&2; exit 1; }
+      [ -e "$FIXTURE_DIR/apps.fail.${a#apps/}" ] && { echo "HTTP 502" >&2; exit 1; }
+      [ -e "$FIXTURE_DIR/apps.body" ] && { cat "$FIXTURE_DIR/apps.body"; exit 0; }
       id=$(jq -r --arg s "${a#apps/}" '.[$s] // empty' "$FIXTURE_DIR/apps.json")
       [ -n "$id" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
       printf '{"id": %s}\n' "$id"; exit 0 ;;
@@ -200,6 +202,23 @@ scenarios = {
     "pin_status_fail_api": ([ctx("ext-ci", "SUCCESS")],                    [[ruleset("ext-ci", app=12345)]], branch()),
     # The app-slug lookup fails with something other than a 404.
     "pin_apps_fail":    ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
+    # A bot the token cannot look up, or a deleted creator: the source is unknown, not proven to be another app.
+    "private_latest_fail": ([ctx("ext-ci", "FAILURE")],                    [[ruleset("ext-ci", app=12345)]], branch()),
+    "creator_null":     ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
+    # Newest first: the app's own status is the latest, so an older status from another source is history.
+    "app_latest_over_old_user_fail": ([ctx("ext-ci", "SUCCESS")],          [[ruleset("ext-ci", app=12345)]], branch()),
+    "app_latest_over_old_user_ok":   ([ctx("ext-ci", "SUCCESS")],          [[ruleset("ext-ci", app=12345)]], branch()),
+    # An older bot's lookup failing must not cost the verdict: only the latest status is read.
+    "old_bot_lookup_fail": ([ctx("ext-ci", "SUCCESS")],                    [[ruleset("ext-ci", app=12345)]], branch()),
+    # The app lookup answers 200 with a body that is not JSON, or has no id.
+    "apps_bad_body":    ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
+    "apps_no_id":       ([ctx("ext-ci", "SUCCESS")],                       [[ruleset("ext-ci", app=12345)]], branch()),
+    # A required name holding a control or format character is met only by that exact name.
+    "scrub_collide_tab": ([run("lint test", "SUCCESS")],                   [[ruleset("lint\ttest")]], branch()),
+    "scrub_collide_zw":  ([run("lint test", "SUCCESS")],                   [[ruleset("lint​test")]], branch()),
+    # One trailing newline on an enum or the head: the render must not split a line on it.
+    "enum_newline":     ([run("lint", "SUCCESS")],                         [[ruleset("ext-ci", "zz-ci", app=12345)]], branch()),
+    "head_newline":     ([run("build", "SUCCESS")],                        [[]],                branch()),
     # A same-named failure from a source the pin excludes does not fail the requirement, in rulesets or classic.
     "pin_other_fails":  ([run("ext-ci", "SUCCESS", workflow=""), ctx("ext-ci", "FAILURE")],
                          [[ruleset("ext-ci", app=12345)]], branch()),
@@ -249,6 +268,7 @@ check_runs = {
     "pin_other_app_run_fails": [app_run("ext-ci", 12345, "success")],
     "pin_classic_other_fails": [app_run("build", 15368, "success")],
     "pin_tab_name": [app_run("ext\tci", 12345, "success")],
+    "enum_newline": [app_run("ext-ci", 12345, None, status="in_progress\n")],
     "pin_backslash_name": [app_run("ext\\ci", 12345, "success")],
 }
 # Pages of the statuses endpoint, newest first.
@@ -279,6 +299,16 @@ statuses = {
     "pin_apps_fail":         [[status("ext-ci", "success", "ext-ci-app[bot]")]],
     "pin_other_fails":       [[status("ext-ci", "failure", "someone", kind="User")]],
     "pin_classic_other_fails": [[status("build", "failure", "other-ci[bot]")]],
+    "private_latest_fail":   [[status("ext-ci", "failure", "private-ci[bot]")]],
+    "creator_null":          [[{"context": "ext-ci", "state": "success", "creator": None}]],
+    "app_latest_over_old_user_fail": [[status("ext-ci", "success", "ext-ci-app[bot]"),
+                                       status("ext-ci", "failure", "someone", kind="User")]],
+    "app_latest_over_old_user_ok":   [[status("ext-ci", "success", "ext-ci-app[bot]"),
+                                       status("ext-ci", "success", "someone", kind="User")]],
+    "old_bot_lookup_fail":   [[status("ext-ci", "success", "ext-ci-app[bot]"),
+                               status("ext-ci", "success", "flaky-ci[bot]")]],
+    "apps_bad_body":         [[status("ext-ci", "success", "ext-ci-app[bot]")]],
+    "apps_no_id":            [[status("ext-ci", "success", "ext-ci-app[bot]")]],
 }
 apps = {"ext-ci-app": 12345, "other-ci": 999}
 classic_rules = {
@@ -294,7 +324,7 @@ classic_rules = {
 }
 merge_states = {"classic_unreadable_blocked": "BLOCKED", "merge_forged": "BLOCKED\nCI_VERDICT=GREEN",
                 "classic_unreadable_hooks": "HAS_HOOKS", "classic_unreadable_unstable": "UNSTABLE", "classic_unreadable_behind": "BEHIND"}
-heads = {"head_forged": "abcdef\nCI_VERDICT=GREEN"}
+heads = {"head_forged": "abcdef\nCI_VERDICT=GREEN", "head_newline": HEAD + "\n"}
 bases = {"base_hash": "release#1"}
 
 for name, (rollup, rules, br) in scenarios.items():
@@ -315,6 +345,9 @@ open(os.path.join(fx, "pin_paged", "checkruns.paged"), "w").write("")
 open(os.path.join(fx, "pin_status_fail_api", "statuses.fail"), "w").write("")
 open(os.path.join(fx, "classic_graphql_fail", "graphql.fail"), "w").write("")
 open(os.path.join(fx, "pin_apps_fail", "apps.fail"), "w").write("")
+open(os.path.join(fx, "old_bot_lookup_fail", "apps.fail.flaky-ci"), "w").write("")
+open(os.path.join(fx, "apps_bad_body", "apps.body"), "w").write('{"id": abc}\n')
+open(os.path.join(fx, "apps_no_id", "apps.body"), "w").write('{"name": "ext-ci-app"}\n')
 PYGEN
 
 PASS=0
@@ -453,7 +486,19 @@ want      'a failing status from the pinned app is RED' pin_status_app_failed 'C
 want      'a status under a user token is unverified' pin_status_user  'required ext-ci has its latest status from @someone instead of app 12345'
 want_not  'a status under a user token is not GREEN' pin_status_user  'CI_VERDICT=GREEN'
 want_not  'a status under a user token is not called unreported' pin_status_user 'not reported by app 12345'
-want      'a bot with no visible app is unverified'  pin_status_private 'required ext-ci has its latest status from @private-ci[bot] instead of app 12345'
+want      'a bot with no visible app is unverified'  pin_status_private 'required ext-ci has its latest status from @private-ci[bot] that this token cannot attribute to app 12345 — confirm in the merge box'
+want_not  'a bot with no visible app is not called another source' pin_status_private 'GitHub refuses the merge'
+want_lines 'a failing bot with no visible app is RED' private_latest_fail '^CI_VERDICT=RED$' 1
+want      'a failing bot with no visible app is named, not called another app' private_latest_fail 'required check failed: ext-ci (latest status from @private-ci[bot] that this token cannot attribute to app 12345)'
+want_not  'a failing bot with no visible app is not "instead of"' private_latest_fail 'instead of app 12345'
+want      'a deleted creator is unverified'          creator_null     'required ext-ci has its latest status from an unknown creator that this token cannot attribute to app 12345'
+want      'the app latest status over an older failing user status is GREEN' app_latest_over_old_user_fail 'CI_VERDICT=GREEN'
+want      'the app latest status over an older passing user status is GREEN' app_latest_over_old_user_ok 'CI_VERDICT=GREEN'
+want      'an older bot lookup failing does not cost the verdict' old_bot_lookup_fail 'CI_VERDICT=GREEN'
+want_exit 'an unreadable app lookup body exits 1'    apps_bad_body    1
+want_not  'an unreadable app lookup body prints no verdict' apps_bad_body 'CI_VERDICT='
+want_exit 'an app lookup body with no id exits 1'    apps_no_id       1
+want_not  'an app lookup body with no id prints no verdict' apps_no_id 'CI_VERDICT='
 want_not  'a bot with no visible app shows no app id' pin_status_private '@private-ci[bot] (app'
 want_lines 'a failing latest status from another source is RED' pin_status_latest_other_failed '^CI_VERDICT=RED$' 1
 want      'the failing latest status names its source' pin_status_latest_other_failed 'required check failed: ext-ci (latest status from @someone instead of app 12345)'
@@ -516,6 +561,15 @@ want_lines 'a forged merge state cannot add a verdict line'  merge_forged  '^CI_
 want      'the one verdict line after a forged merge state is the real one' merge_forged 'CI_VERDICT=INCOMPLETE'
 want_exit 'a forged head exits 1'                            head_forged   1
 want_lines 'a forged head prints no verdict line'            head_forged   '^CI_VERDICT=' 0
+want_lines 'an enum with a trailing newline cannot split the reason' enum_newline '^; ' 0
+want_lines 'an enum with a trailing newline leaves one reason line' enum_newline '^REASON=' 1
+want      'a head with a trailing newline cannot split the head line' head_newline 'HEAD=abcdef1234567890abcdef1234567890abcdef12  BASE-REQUIRED=0'
+
+# A required name is matched exactly; scrubbing is for the render only.
+want      'a tab in a required name is not met by a space' scrub_collide_tab 'required not reported: lint test'
+want_not  'a tab in a required name is not GREEN by a lookalike' scrub_collide_tab 'CI_VERDICT=GREEN'
+want      'a zero-width char in a required name is not met by a space' scrub_collide_zw 'required not reported: lint test'
+want_not  'a zero-width char in a required name is not GREEN by a lookalike' scrub_collide_zw 'CI_VERDICT=GREEN'
 
 # Malformed responses.
 want      'no rollup at all is INCOMPLETE'           null_rollup      'no checks reported'
