@@ -218,6 +218,8 @@ scenarios = {
     "scrub_collide_zw":  ([run("lint test", "SUCCESS")],                   [[ruleset("lint​test")]], branch()),
     "scrub_collide_fail": ([run("lint test", "FAILURE")],                  [[ruleset("lint\ttest")]], branch()),
     "scrub_exact_tab":  ([run("lint\ttest", "SUCCESS")],                   [[ruleset("lint\ttest")]], branch()),
+    "scrub_exact_tab_skipped": ([run("lint\ttest", "SKIPPED"), run("build", "SUCCESS")], [[ruleset("lint\ttest")]], branch()),
+    "scrub_exact_tab_failed": ([run("lint\ttest", "FAILURE"), run("build", "SUCCESS")], [[ruleset("lint\ttest")]], branch()),
     # One trailing newline on an enum or the head: the render must not split a line on it.
     "enum_newline":     ([run("lint", "SUCCESS")],                         [[ruleset("ext-ci", "zz-ci", app=12345)]], branch()),
     "head_newline":     ([run("build", "SUCCESS")],                        [[]],                branch()),
@@ -575,6 +577,10 @@ want_not  'a zero-width char in a required name is not GREEN by a lookalike' scr
 want      'a failing lookalike of a required name is not the required check' scrub_collide_fail 'CI_VERDICT=INCOMPLETE'
 want_not  'a failing lookalike is not marked required' scrub_collide_fail '[required] lint test (CI)'
 want      'a required name with a tab is met by that exact name' scrub_exact_tab 'CI_VERDICT=GREEN'
+want      'a skipped required name with a tab is still required' scrub_exact_tab_skipped 'required skipped/neutral: lint test'
+want_not  'a skipped required name with a tab is not GREEN' scrub_exact_tab_skipped 'CI_VERDICT=GREEN'
+want_lines 'a failing required name with a tab is a required failure' scrub_exact_tab_failed '^CI_VERDICT=RED$' 1
+want      'a failing required name with a tab is marked required' scrub_exact_tab_failed '[required] lint test (CI): FAILURE'
 
 # Malformed responses.
 want      'no rollup at all is INCOMPLETE'           null_rollup      'no checks reported'
