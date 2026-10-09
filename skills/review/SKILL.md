@@ -1,8 +1,8 @@
 ---
 name: review
 description: >-
-  Two-pass evidence-based PR review. Dispatches security-lens and
-  systemic-patterns-lens on every PR. Usage - /reviewkit:review [PR#]
+  Two-pass evidence-based PR review and re-review. Dispatches security-lens
+  and systemic-patterns-lens on every PR. Usage - /reviewkit:review [PR#]
 user-invocable: true
 allowed-tools: Agent, Bash(git *), Bash(gh *), Bash(jq *), Read, Glob, Grep, AskUserQuestion
 argument-hint: "[PR-number]"
@@ -57,11 +57,50 @@ Run this before spawning any reviewer agent, so a fresh pass doesn't rediscover 
 
 Exit `0` = clean; exit `3` = unaddressed feedback exists (stdout is still valid — use it); exit `1`/`2` = hard/usage error (no usable output; note the gap and continue without dedup context).
 
-From the output, build a compact **prior review context** block: for each item (review body, unresolved thread, active conversation comment), note author, verdict where applicable, scope, and a one-line summary. Cap at the 15 most-recent/highest-severity items; summarize any excess as a trailing count. If the sweep returns nothing, the block is simply empty.
+From the output, build the **feedback inventory** first. It holds every item in every bucket, keyed by its thread, review or comment ID, resolved, outdated, dismissed and minimized ones included. Give each item exactly one disposition: **open**, **addressed** (name the check that now passes at the reviewed head), **disproved** (with the evidence), or **not applicable** (with the reason).
+
+- The default report cuts bodies at 200 characters and lists closed items by ID only. Run the sweep again with `--full` before judging what any item claims. It prints every body untruncated, plus every reply, still scrubbed. A snippet helps you navigate; it is not evidence that you read the text.
+- A resolved flag, an author's "fixed" and a bot's "resolved" are all assertions. Verify each against the reviewed head like any other finding.
+- A failed fetch, or a thread with more replies than were fetched (`--full` names it), is a limitation. Record it as one; never dismiss it silently.
+
+Then compact the inventory into a **prior review context** block for the reviewer prompt. For each item (review body, unresolved thread, active conversation comment), note the author, the verdict where there is one, the scope and a one-line summary. Cap the block at the 15 most-recent or highest-severity items and summarize the rest as a trailing count. The cap limits the prompt, never the inventory: every item keeps its disposition in your record whether or not it reached the prompt. If the sweep returns nothing, the block is simply empty.
+
+### 3a. CI verdict on the reviewed head
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER" --head "$(git rev-parse HEAD)"
+```
+
+The script reads every check run and commit status in the head's `statusCheckRollup` (`gh` paginates it). It compares them against the base branch's required contexts, taken from both rulesets and classic branch protection, and ends with `CI_VERDICT=` and `REASON=` lines. GitHub keeps only the latest attempt of each workflow run in the rollup, so a re-run replaces its failed attempt there. Same-named entries that remain are separate runs, and the worst of them counts. A required context pinned to an app counts only from that app: its check runs, or the context's latest commit status when the app's bot set it. GitHub refuses the merge while another source holds that latest status, so a status set by a user's token or by another app reads INCOMPLETE, or RED when it failed. So does one set by a private app's bot this token can't look up, or by a deleted account, because the script can't tell whether that is the pinned app. Show the raw output; don't restate it as a verdict of your own.
+
+- **GREEN** is the only result that lets the review say CI passed.
+- **RED** names the required check that failed.
+- **INCOMPLETE** names what is pending, required but not reported, or required but skipped or neutral. A skipped or neutral required check passes the merge gate without proving anything ran, and so does a run where every check skipped. A head that moved after checkout is INCOMPLETE too, because its checks belong to a commit nobody reviewed. So is a base whose ruleset also requires workflows, code scanning, code quality, code coverage, license compliance or deployments, or whose classic protection requires deployments: those gates name no status check, so the rollup cannot prove them — the merge box can. Only a repo admin can read the classic deployment setting. Without admin access the script treats it as possibly set, and reads INCOMPLETE, unless the merge box already reports the PR as mergeable.
+- **RED-ADVISORY** means only checks that no rule requires failed, and no such gate exists. A same-named check run from an app other than the pinned one is one of them. It still isn't green.
+
+Never derive green from an empty failure list, from `gh pr checks` (it lists only the checks that have reported), or from an earlier head. Exit `1`/`2` means no verdict: report CI as unverified. This skill doesn't fix CI; it reports the verdict in step 7.
+
+### 3b. Re-review continuity
+
+A re-review is a review of a PR that already carries one of yours, or a review recorded earlier in this conversation. The sweep shows the full SHA of the commit each earlier review was submitted against (`@<sha>`). On a re-review:
+
+1. **Recover the prior state.** Find the head you last reviewed (`PRIOR`), the findings you raised there (its body and threads, from the `--full` sweep), and their dispositions.
+2. **Compute the correction diff.** Run `git diff "$PRIOR"..HEAD` (fetch `pull/$PR_NUMBER/head` first). After a force-push `PRIOR` is on no branch; try `git fetch origin "$PRIOR"`, which needs the full SHA. If it still can't be fetched, say so and run a full review instead; don't guess which parts changed.
+3. **Re-check every prior finding at the new head.** Re-run the check that produced it; the author's reply is not a substitute (step 6a). Give each finding exactly one status:
+   - **fixed** — the check now passes, and a change in the correction diff explains why
+   - **still open** — the check still shows the defect
+   - **regressed** — it was fixed at an earlier head and is broken again, or its fix broke something the finding did not cover
+   - **disproved** — the original check was wrong; say what you got wrong
+
+   If no change in the correction diff explains a "fixed", treat it as a coincidence to investigate, not a close.
+4. **Scope the new pass to the correction.** Dispatch the reviewers on the files in the correction diff plus their consumers: callers, importers, tests, and docs that describe them. Carry earlier evidence forward for untouched files only after confirming their inputs didn't change. A correction in a shared helper invalidates every finding that rested on it.
+5. **Don't loop.** Only a new head earns a re-review. CI finishing, an edited PR description, or the same request again on an unchanged head does not justify a fresh full panel. A disputed assertion with unchanged evidence gets adjudicated (step 6a), not reviewed again. An optional suggestion doesn't become required by being repeated.
+
+A changed head invalidates the earlier verdict and the earlier CI verdict. Never present a re-review's result as covering commits it didn't see.
 
 ### 4. Dispatch both reviewer agents in parallel
 
-Always dispatch both `reviewkit:security-lens` and `reviewkit:systemic-patterns-lens` on every PR, passing the full changed-file list. Each gets this prompt template:
+Always dispatch both `reviewkit:security-lens` and `reviewkit:systemic-patterns-lens` on every PR, passing the full changed-file list — or, on a re-review, the correction diff's files plus their consumers (step 3b). Each gets this prompt template:
 
 ```text
 You are reviewing PR #{pr_number} in {repo}. The PR is checked out at HEAD.
@@ -82,6 +121,35 @@ Evidence block, don't report it as fresh — note it in dropped_findings as
 "already covered by existing review — not independently re-verified" at
 confidence medium. If you DO have independent evidence, report it regardless
 of what the prior context claims.
+
+## Review the solution (four dimensions — each one gets a result)
+
+Before judging, read the applicable standards (the repo's contributor and
+agent instruction files, style guides, lint config) and 2-3 sibling
+implementations at the same scope. Then assess:
+
+1. Correctness and security — trace inputs through every affected consumer,
+   pinned dependencies included. Check runtime behavior, isolation, secret
+   exposure and failure paths. Trace a provider's or renderer's default
+   before calling an omitted input a missing field. Separate a demonstrated
+   defect from an untested operational risk. Passing CI is not correctness.
+2. Naming and organization — names say what a thing is for; each file
+   groups one responsibility. An explicit project standard can require a
+   correction with no runtime bug behind it.
+3. Simplicity and efficiency — unnecessary inputs, variables, repetition,
+   overrides, comments and resources. Name the simpler replacement and
+   verify it does the same job; never remove a guard just because it is
+   unusual. Code you can't explain prompts investigation, not a finding.
+4. Reuse and conventions — check the existing module, library or chart
+   (its defaults and its consumers) before recommending a custom
+   implementation or a consolidation. One precedent is not the standard; a
+   real isolation boundary or a missing upstream capability can justify a
+   different approach.
+
+For each dimension, return one of three results: finding (in
+verified_findings), clear (with the evidence: what you read or ran), or
+not_applicable (with the reason). A dimension with no result is a dimension
+the review did not cover.
 
 ## Two-Pass Review Process
 
@@ -105,9 +173,9 @@ verification, and keep it with an Evidence block or drop it with reasoning.
 
 ## Verification Checklist (by finding type)
 
-- **Missing X** — grep the codebase AND check 2-3 sibling files before claiming something is missing; if siblings also lack it, downgrade to SUGGESTION.
+- **Missing X** — grep the codebase AND check 2-3 sibling files before claiming something is missing. A requirement the project's standard states stays a finding however many siblings skip it; otherwise, if siblings also lack it, downgrade to SUGGESTION.
 - **Dead code** — grep ALL consumers, including dynamic/string-based lookups, before claiming code is unused.
-- **Pattern violation** — check the pattern across sibling files first; if the "violation" is the established convention, drop or downgrade.
+- **Pattern violation** — check the applicable standard and the pattern across sibling files. Repetition doesn't make a pattern the standard, and working code doesn't override a stated requirement; drop or downgrade only when the "violation" is the documented convention.
 - **Pre-existing issue** — verify with `git blame`/`git log -1 -- <file>`; report as ISSUE (not BLOCKING) with a note that it predates this PR.
 - **Content dropped or missing (stale-branch check)** — before claiming content was removed, check whether it existed at the merge-base (`git merge-base HEAD origin/main`), not just on `origin/main` — a branch created before a recent main change can look like it "dropped" content that was actually added to main afterward.
 - **Generated output correctness** — for a script producing markdown/JSON/YAML/config, test with adversarial inputs (`|` in markdown tables, `"` in JSON, multi-byte UTF-8 near truncation boundaries) — passing without error isn't the same as producing correct output.
@@ -151,7 +219,7 @@ Comparative claims ("consistent with the existing pattern", "matches module X") 
 
 ## Output Format
 
-Return `files_reviewed`, `verified_findings` (each with an Evidence block), and `dropped_findings` (each with the verification command/result and a confidence level: low/medium/high). If you find no issues after verification, return empty lists for both — but `files_reviewed` must still be non-empty (an empty list with empty findings means "did not run").
+Return `files_reviewed`, `review_coverage` (one entry per review-the-solution dimension: finding, clear or not_applicable, with its evidence or reason), `verified_findings` (each with an Evidence block), and `dropped_findings` (each with the verification command/result and a confidence level: low/medium/high). If you find no issues after verification, return empty lists for both — but `files_reviewed` must still be non-empty (an empty list with empty findings means "did not run").
 
 ## Steelman (mandatory, materiality-gated)
 
@@ -167,6 +235,8 @@ After both agents return:
 3. Deduplicate same file+line findings across the two agents — merge severity upward, keep the stronger evidence. Overlap between the two lenses is a convergence signal, not noise.
 4. A finding claiming "pre-existing" without a `git blame`/`git log` citation gets flagged for manual verification.
 5. No silent dismissals — every dropped finding must appear in the final "dropped for override" list with its confidence level.
+6. Every agent returned a `review_coverage` result for all four dimensions. A missing one is a coverage gap: re-dispatch for it, or report the review as incomplete. Never report it as clean.
+7. On a re-review, every prior finding carries exactly one status from step 3b, and every inventory item from step 3 carries a disposition.
 
 ### 6. Adversarial pass (mandatory)
 
@@ -189,6 +259,17 @@ Withdrawing a finding because the author sounded confident, without re-running a
 ```text
 ## PR #{pr_number} Review Findings (Verified)
 
+**Reviewed head:** {sha} · **CI:** {CI_VERDICT} — {REASON}
+**Re-review of:** {prior_sha} (omit on a first review)
+
+### Prior findings (re-review only)
+| Finding | Status | Evidence at {sha} |
+| --- | --- | --- |
+| {one line} | fixed / still open / regressed / disproved | {the check re-run and its result} |
+
+### Coverage
+Correctness/security: {finding | clear | n/a} · Naming/organization: … · Simplicity/efficiency: … · Reuse/conventions: …
+
 ### path/to/file.ext
 
 **[BLOCKING] Line 42 — {short description}**
@@ -209,6 +290,7 @@ Ask the user: "Post these findings to the PR? You can remove or edit items first
 
 ### 8. Post to GitHub (only if the user confirms)
 
+- Re-read the head first: `gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q '.headRefOid'`. If it moved past the head you reviewed, the findings and the CI verdict describe a commit that is no longer the PR. Re-run steps 3a and 3b before posting anything.
 - Get the latest commit SHA: `gh pr view "$PR_NUMBER" --repo "$REPO" --json commits --jq '.commits[-1].oid'`
 - Post each finding as an inline comment via `gh api POST /repos/{owner}/{repo}/pulls/{number}/comments` using `path`, `line`, `body`, `commit_id`, `side: "RIGHT"` — never the `position` parameter, which counts from the diff hunk and easily lands on removed code.
 **Choosing the review state — it is a merge authorization, not a tone.**

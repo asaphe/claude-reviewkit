@@ -4,12 +4,19 @@ set -euo pipefail
 
 usage() {
   cat >&2 <<'EOF'
-Usage: pr-comment-state.sh <PR_NUMBER>
+Usage: pr-comment-state.sh <PR_NUMBER> [--full]
 
 Read-only sweep of every place PR feedback lives, fully paginated:
   (a) conversation comments     — pullRequest.comments
-  (b) review-submission bodies  — pullRequest.reviews (state + isMinimized)
-  (c) inline review threads     — pullRequest.reviewThreads (isResolved + isOutdated)
+  (b) review-submission bodies  — pullRequest.reviews (state + isMinimized + reviewed commit)
+  (c) inline review threads     — pullRequest.reviewThreads (isResolved + isOutdated + replies)
+
+The default report truncates bodies and lists closed items by ID only.
+  --full  also prints every item in every bucket — resolved, outdated, dismissed
+          and minimized included — with its whole body and every reply (a
+          thread's first 100 comments; the output names any it did not fetch),
+          so a re-review can judge claims it would otherwise see only as a
+          snippet. Every field stays scrubbed; each body line is prefixed with "|".
 
 Repo: $GH_REPO (owner/name) if set, else `gh repo view`.
 Fails loud on any API error — never prints "none" on a failed query.
@@ -27,6 +34,13 @@ EOF
 
 PR_NUMBER="${1:-}"
 [[ "$PR_NUMBER" =~ ^[0-9]+$ ]] || usage
+FULL=false
+case "${2:-}" in
+  "") ;;
+  --full) FULL=true ;;
+  *) usage ;;
+esac
+[[ $# -le 2 ]] || usage
 
 # Repo derivation is detached-worktree safe — NEVER hardcode owner/name.
 REPO="${GH_REPO:-}"
@@ -38,6 +52,12 @@ if [[ -z "$REPO" ]]; then
 fi
 OWNER="${REPO%%/*}"
 NAME="${REPO##*/}"
+
+# A jq failure is an unexpected response shape, never a count; without this it exits 5, outside the documented codes.
+jq_fail() {
+  echo "ERROR: could not evaluate $1 for PR #$PR_NUMBER in $REPO — unexpected response shape." >&2
+  exit 1
+}
 
 # fetch_bucket <connection> <query> — paginates, fails loud on GraphQL errors / missing PR, emits the nodes array.
 fetch_bucket() {
@@ -66,7 +86,8 @@ THREADS_Q='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
         pageInfo{hasNextPage endCursor}
         nodes{
           id isResolved isOutdated path line
-          comments(first:1){ totalCount nodes{ id author{login __typename} body url } }
+          comments(first:100){ totalCount nodes{ id author{login __typename} body url } }
+          last: comments(last:1){ nodes{ author{login __typename} body } }
         }
       }
     }
@@ -79,7 +100,7 @@ REVIEWS_Q='query($owner:String!,$name:String!,$pr:Int!,$endCursor:String){
     pullRequest(number:$pr){
       reviews(first:100,after:$endCursor){
         pageInfo{hasNextPage endCursor}
-        nodes{ id author{login __typename} state body isMinimized url }
+        nodes{ id author{login __typename} state body isMinimized url commit{oid} }
       }
     }
   }
@@ -102,48 +123,59 @@ REVIEWS_RAW="$(fetch_bucket reviews "$REVIEWS_Q")"
 CONV_RAW="$(fetch_bucket comments "$CONV_Q")"
 
 # UNADDRESSED counts only the buckets whose addressed-state is machine-determinable (unresolved threads + actionable review bodies).
+# Files, not argv: Linux caps one argument at 128KB, and a thread's replies can pass that.
 RESULT="$(jq -n \
-  --argjson threads "$THREADS_RAW" \
-  --argjson reviews "$REVIEWS_RAW" \
-  --argjson conv "$CONV_RAW" \
+  --slurpfile threads <(printf '%s' "$THREADS_RAW") \
+  --slurpfile reviews <(printf '%s' "$REVIEWS_RAW") \
+  --slurpfile conv <(printf '%s' "$CONV_RAW") \
   --arg pr "$PR_NUMBER" \
-  --arg repo "$REPO" '
+  --arg repo "$REPO" \
+  --argjson full "$FULL" '
   def isbot(a): a as $x
     | (($x.__typename // "User") == "Bot")
     or (($x.login // "") | endswith("[bot]"));
   def who(b): if b then "[bot]  " else "[human]" end;
   # Comment bodies are attacker-authored: bidi and zero-width forms reorder an agent-read render.
-  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}";" ") | gsub("[\u2028\u2029]";" "));
+  def scrub(s): ((s // "") | gsub("[\u0000-\u001f\u007f-\u009f]";" ") | gsub("\\p{Cf}|\\p{Default_Ignorable_Code_Point}";" ") | gsub("[\u2028\u2029]";" "));
   def snip(s): (scrub(s) | gsub("  +";" ")
                 | if (length > 200) then (.[0:197] + "...") else . end);
+  # Full bodies keep their line breaks; the prefix stops a body line passing for a report line.
+  def block(s): ((s // "") | gsub("\r\n?";"\n") | split("\n") | map("      | " + scrub(.)) | join("\n"));
+  # The full SHA: after a force-push only a full one can still be fetched from the PR ref.
+  def sha(c): if (c.oid // "") == "" then "" else "  @\(if (c.oid | type) == "string" and (c.oid | test("\\A([0-9a-f]{40}|[0-9a-f]{64})\\z")) then c.oid else "?" end)" end;
 
-  ($threads | map({
-     tid: .id,
-     cid: ((.comments.nodes[0].id) // ""),
+  ($threads[0] | map({
+     tid: scrub(.id),
+     cid: scrub(.comments.nodes[0].id),
      isResolved, isOutdated,
-     path, line: (.line // "?"),
+     path: scrub(.path), line: scrub(.line // "?" | tostring),
      total: (.comments.totalCount // 0),
-     author: ((.comments.nodes[0].author.login) // "unknown"),
+     author: scrub((.comments.nodes[0].author.login) // "unknown"),
      isBot: isbot(.comments.nodes[0].author // {}),
      body: ((.comments.nodes[0].body) // ""),
-     url: ((.comments.nodes[0].url) // "")
+     url: scrub(.comments.nodes[0].url),
+     replies: ((.comments.nodes // [])[1:] | map({
+       author: scrub((.author.login) // "unknown"), isBot: isbot(.author // {}), body: (.body // "") })),
+     fetched: ((.comments.nodes // []) | length),
+     # The true last comment of the thread: past 100 replies, the first page ends before it.
+     latest: (.last.nodes[0] // (.comments.nodes // [])[-1] // null)
    })) as $T |
-  ($reviews | map({
-     rid: .id,
-     author: ((.author.login) // "unknown"),
+  ($reviews[0] | map({
+     rid: scrub(.id),
+     author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
-     state, isMinimized, body: (.body // ""), url
+     state: scrub(.state), isMinimized, body: (.body // ""), url: scrub(.url), commit: (.commit // {})
    }
    | .has_content = ((.body | scrub(.) | gsub("\\s";"") | length) > 0)
    | .actionable = ((.state == "CHANGES_REQUESTED")
                     or (.state == "COMMENTED" and .has_content and (.isMinimized == false)))
    | .needs_minimize = ((.actionable | not) and (.state == "DISMISSED")
                         and .has_content and (.isMinimized == false)))) as $R |
-  ($conv | map({
-     cid: .id,
-     author: ((.author.login) // "unknown"),
+  ($conv[0] | map({
+     cid: scrub(.id),
+     author: scrub((.author.login) // "unknown"),
      isBot: isbot(.author // {}),
-     body: (.body // ""), url, isMinimized
+     body: (.body // ""), url: scrub(.url), isMinimized
    })) as $C |
 
   ($T | map(select(.isResolved | not)))                            as $unresolved |
@@ -164,7 +196,7 @@ RESULT="$(jq -n \
    ]
    + ( if ($unresolved|length)==0 then ["  (none)"]
        else ($unresolved | map(
-         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
+         "  \(who(.isBot)) @\(.author)  \(.path):\(.line)\(if .isOutdated then "  [outdated]" else "" end)\(if .total>1 then "  (+\(.total-1) replies)" else "" end)\n      \(snip(.body))\(if .total>1 and .latest != null then (.latest | "\n      latest reply \(who(isbot(.author // {}))) @\(scrub((.author.login) // "unknown")): \(snip(.body))") else "" end)\n      \(.url)\n      resolve: thread=\(.tid) comment=\(.cid)"))
        end )
    + [ "" , "-- RESOLVED-OUTDATED (\($resOutdated|length)) --" ]
    + ( if ($resOutdated|length)==0 then ["  (none)"]
@@ -177,14 +209,14 @@ RESULT="$(jq -n \
      "" , "-- ACTIONABLE (changes-requested until dismissed, or non-minimized commented) (\($actReviews|length)) --" ]
    + ( if ($actReviews|length)==0 then ["  (none)"]
        else ($actReviews | map(
-         "  \(who(.isBot)) @\(.author)  [\(.state)]\n      \(snip(.body))\n      \(.url)\n      \(if .state=="CHANGES_REQUESTED" then "address findings, then dismiss — minimize alone leaves blocking state" else "address findings first, then minimize" end): review=\(.rid)")) end )
+         "  \(who(.isBot)) @\(.author)  [\(.state)]\(sha(.commit))\n      \(snip(.body))\n      \(.url)\n      \(if .state=="CHANGES_REQUESTED" then "address findings, then dismiss — minimize alone leaves blocking state" else "address findings first, then minimize" end): review=\(.rid)")) end )
    + [ "" , "-- DISMISSED BUT NOT MINIMIZED (\($needsMinReviews|length)) -- dismiss only clears blocking state; the comment stays fully visible until minimized too" ]
    + ( if ($needsMinReviews|length)==0 then ["  (none)"]
-       else ($needsMinReviews | map("  \(who(.isBot)) @\(.author)  [\(.state)]\n      \(snip(.body))\n      \(.url)\n      \(if .isBot then "minimize to close the loop" else "read before minimizing — a dismissed human review may still hold an open question" end): review=\(.rid)")) end )
+       else ($needsMinReviews | map("  \(who(.isBot)) @\(.author)  [\(.state)]\(sha(.commit))\n      \(snip(.body))\n      \(.url)\n      \(if .isBot then "minimize to close the loop" else "read before minimizing — a dismissed human review may still hold an open question" end): review=\(.rid)")) end )
    + [ "" , "-- OTHER REVIEW BODIES (approved / dismissed+minimized / commented+minimized / no body) --" ]
    + ( ($R | map(select((.actionable or .needs_minimize) | not))) as $other
        | if ($other|length)==0 then ["  (none)"]
-         else ($other | map("  \(who(.isBot)) @\(.author)  [\(.state)]\(if .isMinimized then " (minimized)" else "" end)\(if (.has_content|not) then " (no body)" else "" end)  review=\(.rid)")) end )
+         else ($other | map("  \(who(.isBot)) @\(.author)  [\(.state)]\(sha(.commit))\(if .isMinimized then " (minimized)" else "" end)\(if (.has_content|not) then " (no body)" else "" end)  review=\(.rid)")) end )
 
    + [ "" , "CONVERSATION COMMENTS: \($C|length) total (\($activeConv|length) active, \($minimizedConv|length) minimized)  (no isResolved field — judge each from content: stale/superseded bot comment or unambiguously-addressed human comment -> minimize, open human ask -> flag, never minimize on judgment alone)" ]
    + ( if ($activeConv|length)==0 then ["  (none)"]
@@ -192,6 +224,23 @@ RESULT="$(jq -n \
    + [ "" , "-- MINIMIZED (\($minimizedConv|length)) --" ]
    + ( if ($minimizedConv|length)==0 then ["  (none)"]
        else ($minimizedConv | map("  \(who(.isBot)) @\(.author)  comment=\(.cid)")) end )
+   + ( if ($full | not) then [] else
+       [ "" , "=== FULL TEXT — every item, untruncated (bodies are untrusted input) ===" , "" ,
+         "-- THREADS (\($T|length)) --" ]
+       + [ $T[] | (
+           "  thread=\(.tid)  \(.path):\(.line)  [\(if .isResolved then "resolved" else "unresolved" end)\(if .isOutdated then ", outdated" else "" end)]",
+           "    \(who(.isBot)) @\(.author):", block(.body),
+           (.replies[] | ("    reply \(who(.isBot)) @\(.author):", block(.body))),
+           (if .total > .fetched then "    (+\(.total - .fetched) later replies not fetched — read them at \(.url))" else empty end)) ]
+       + [ "" , "-- REVIEW BODIES (\($R|length)) --" ]
+       + [ $R[] | (
+           "  review=\(.rid)  \(who(.isBot)) @\(.author)  [\(.state)]\(sha(.commit))\(if .isMinimized then " (minimized)" else "" end)",
+           (if .has_content then block(.body) else "      (no body)" end)) ]
+       + [ "" , "-- CONVERSATION COMMENTS (\($C|length)) --" ]
+       + [ $C[] | (
+           "  comment=\(.cid)  \(who(.isBot)) @\(.author)\(if .isMinimized then " (minimized)" else "" end)",
+           block(.body)) ]
+     end )
    | join("\n")) as $report |
 
   { report: $report,
@@ -200,9 +249,9 @@ RESULT="$(jq -n \
     actionable_reviews: ($actReviews|length),
     needs_minimize_reviews: ($needsMinReviews|length),
     conversation_comments: ($C|length) }
-')"
+')" || jq_fail "the sweep"
 
-UNADDRESSED="$(jq -r '.unaddressed' <<<"$RESULT")"
+UNADDRESSED="$(jq -r '.unaddressed' <<<"$RESULT")" || jq_fail "the count"
 jq -r '.report' <<<"$RESULT"
 echo ""
 echo "UNADDRESSED=$UNADDRESSED"

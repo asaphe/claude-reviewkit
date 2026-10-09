@@ -73,6 +73,7 @@ Relevant to any tool that touches, tests against, or handles credential-shaped d
 
 **Files reviewed:** [{path1}, {path2}, ...]
 **Security domains covered:** {list}
+**Review-the-solution coverage:** correctness/security: {finding | clear | not_applicable — evidence or reason}; naming/organization: {…}; simplicity/efficiency: {…}; reuse/conventions: {…}
 **Overall confidence:** {0-100}
 **Findings dropped for insufficient evidence:** {count}
 
