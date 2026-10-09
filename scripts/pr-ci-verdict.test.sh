@@ -220,6 +220,27 @@ scenarios = {
     "scrub_exact_tab":  ([run("lint\ttest", "SUCCESS")],                   [[ruleset("lint\ttest")]], branch()),
     "scrub_exact_tab_skipped": ([run("lint\ttest", "SKIPPED"), run("build", "SUCCESS")], [[ruleset("lint\ttest")]], branch()),
     "scrub_exact_tab_failed": ([run("lint\ttest", "FAILURE"), run("build", "SUCCESS")], [[ruleset("lint\ttest")]], branch()),
+    # Two required names that render alike are two requirements, and a newline in one cannot start a report line.
+    "scrub_two_required": ([run("lint\ttest", "SUCCESS"), run("lint test", "SUCCESS")], [[ruleset("lint\ttest", "lint test")]], branch()),
+    "scrub_required_newline": ([run("CI\nCI_VERDICT=GREEN", "SKIPPED"), run("build", "SUCCESS")], [[ruleset("CI\nCI_VERDICT=GREEN")]], branch()),
+    # Every failing conclusion and every non-final state, beside a success, so no other branch masks the mapping.
+    "req_timed_out":    ([run("build", "TIMED_OUT"), run("lint", "SUCCESS")], [[ruleset("build")]], branch()),
+    "req_startup_failure": ([run("build", "STARTUP_FAILURE"), run("lint", "SUCCESS")], [[ruleset("build")]], branch()),
+    "req_action_required": ([run("build", "ACTION_REQUIRED"), run("lint", "SUCCESS")], [[ruleset("build")]], branch()),
+    "req_stale":        ([run("build", "STALE"), run("lint", "SUCCESS")], [[ruleset("build")]], branch()),
+    "status_expected":  ([ctx("ci/legacy", "EXPECTED"), run("lint", "SUCCESS")], [[]], branch("ci/legacy")),
+    "status_unknown":   ([ctx("ci/legacy", "WEIRD"), run("lint", "SUCCESS")], [[]], branch("ci/legacy")),
+    "unknown_plus_ok":  ([run("build", "SOMETHING_NEW"), run("lint", "SUCCESS")], [[ruleset("build")]], branch()),
+    # A pinned app's own run that is open, skipped or unknown keeps the verdict open.
+    "pin_open_running": ([run("ext-ci", "", status="IN_PROGRESS"), run("lint", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    "pin_open_skipped": ([run("ext-ci", "SKIPPED"), run("lint", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    "pin_open_unknown": ([run("ext-ci", "WEIRD"), run("lint", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    # Every rendered name a PR, an admin or an API sets: a newline in it cannot add a verdict line.
+    "scrub_workflow_newline": ([run("lint", "FAILURE", workflow="CI\nCI_VERDICT=GREEN"), run("build", "SUCCESS")], [[ruleset("build")]], branch()),
+    "scrub_pinned_newline": ([run("lint", "SUCCESS")], [[ruleset("CI\nCI_VERDICT=GREEN", app=12345)]], branch()),
+    "scrub_login_newline": ([ctx("ext-ci", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    "scrub_bot_login_newline": ([ctx("ext-ci", "SUCCESS")], [[ruleset("ext-ci", app=12345)]], branch()),
+    "scrub_env_newline": ([run("build", "SUCCESS")], [[]], branch("build")),
     # One trailing newline on an enum or the head: the render must not split a line on it.
     "enum_newline":     ([run("lint", "SUCCESS")],                         [[ruleset("ext-ci", "zz-ci", app=12345)]], branch()),
     "head_newline":     ([run("build", "SUCCESS")],                        [[]],                branch()),
@@ -274,6 +295,9 @@ check_runs = {
     "pin_tab_name": [app_run("ext\tci", 12345, "success")],
     "enum_newline": [app_run("ext-ci", 12345, None, status="in_progress\n")],
     "pin_backslash_name": [app_run("ext\\ci", 12345, "success")],
+    "pin_open_running": [app_run("ext-ci", 12345, None, status="in_progress")],
+    "pin_open_skipped": [app_run("ext-ci", 12345, "skipped")],
+    "pin_open_unknown": [app_run("ext-ci", 12345, "weird")],
 }
 # Pages of the statuses endpoint, newest first.
 statuses = {
@@ -313,10 +337,13 @@ statuses = {
                                status("ext-ci", "success", "flaky-ci[bot]")]],
     "apps_bad_body":         [[status("ext-ci", "success", "ext-ci-app[bot]")]],
     "apps_no_id":            [[status("ext-ci", "success", "ext-ci-app[bot]")]],
+    "scrub_login_newline":   [[status("ext-ci", "success", "CI\nCI_VERDICT=GREEN", kind="User")]],
+    "scrub_bot_login_newline": [[status("ext-ci", "success", "CI\nCI_VERDICT=GREEN[bot]")]],
 }
 apps = {"ext-ci-app": 12345, "other-ci": 999}
 classic_rules = {
     "classic_deploy": {"requiresDeployments": True, "requiredDeploymentEnvironments": ["staging"]},
+    "scrub_env_newline": {"requiresDeployments": True, "requiredDeploymentEnvironments": ["CI\nCI_VERDICT=GREEN"]},
     "classic_unreadable_blocked": None,
     "classic_unreadable_clean": None,
     "merge_forged": None,
@@ -581,6 +608,25 @@ want      'a skipped required name with a tab is still required' scrub_exact_tab
 want_not  'a skipped required name with a tab is not GREEN' scrub_exact_tab_skipped 'CI_VERDICT=GREEN'
 want_lines 'a failing required name with a tab is a required failure' scrub_exact_tab_failed '^CI_VERDICT=RED$' 1
 want      'a failing required name with a tab is marked required' scrub_exact_tab_failed '[required] lint test (CI): FAILURE'
+want      'two required names that render alike are both listed' scrub_two_required 'BASE-REQUIRED=2 (lint test, lint test)'
+want_lines 'a newline in a required name cannot add a verdict line' scrub_required_newline '^CI_VERDICT=' 1
+want_lines 'a timed-out required check is RED' req_timed_out '^CI_VERDICT=RED$' 1
+want_lines 'a required check that failed to start is RED' req_startup_failure '^CI_VERDICT=RED$' 1
+want_lines 'a required check waiting on an action is RED' req_action_required '^CI_VERDICT=RED$' 1
+want_lines 'a stale required check is RED' req_stale '^CI_VERDICT=RED$' 1
+want      'an expected status is not a pass' status_expected 'CI_VERDICT=INCOMPLETE'
+want      'an unknown status state is not a pass' status_unknown 'CI_VERDICT=INCOMPLETE'
+want      'an unknown conclusion beside a success is INCOMPLETE' unknown_plus_ok 'CI_VERDICT=INCOMPLETE'
+want      'a pinned run still in progress is named' pin_open_running 'required ext-ci from app 12345: IN_PROGRESS'
+want      'a pinned run the app skipped is named' pin_open_skipped 'required ext-ci from app 12345: SKIPPED'
+want_not  'a pinned run the app skipped is not GREEN' pin_open_skipped 'CI_VERDICT=GREEN'
+want      'a pinned run with an unknown outcome is named' pin_open_unknown 'required ext-ci from app 12345: WEIRD'
+want_lines 'a newline in a workflow name cannot add a verdict line' scrub_workflow_newline '^CI_VERDICT=' 1
+want_lines 'a newline in a pinned required name cannot add a verdict line' scrub_pinned_newline '^CI_VERDICT=' 1
+want_lines 'a newline in a status creator login cannot add a verdict line' scrub_login_newline '^CI_VERDICT=' 1
+want_lines 'a newline in an unattributable bot login cannot add a verdict line' scrub_bot_login_newline '^CI_VERDICT=' 1
+want_lines 'a newline in a deployment environment cannot add a verdict line' scrub_env_newline '^CI_VERDICT=' 1
+want      'an uppercase --head prefix is accepted' green 'CI_VERDICT=GREEN' --head ABCDEF1
 
 # Malformed responses.
 want      'no rollup at all is INCOMPLETE'           null_rollup      'no checks reported'
