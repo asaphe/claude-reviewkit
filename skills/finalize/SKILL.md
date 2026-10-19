@@ -33,7 +33,7 @@ gh pr view --json number,title,body,headRefName --jq '{number, title, body, bran
   "${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER" --head "$(git rev-parse HEAD)"
   ```
 
-  It sorts every check into failed, pending, skipped/neutral or succeeded. It confirms each required context against the base branch's rulesets and classic branch protection, by name and, when pinned, by its app, so a required context missing from the rollup counts as not reported, never passing. It ends with `CI_VERDICT=GREEN|RED|INCOMPLETE|RED-ADVISORY` and a `REASON=` line. Flag anything but GREEN and continue: this skill doesn't fix CI. A push in step 2 starts a new run on a new head, so re-run the verdict, with `--head "$(git rev-parse HEAD)"` again, before the step 6 report: without `--head` a verdict on the old head reads as current.
+  It sorts every check into failed, pending, skipped/neutral or succeeded. It confirms each required context against the base branch's rulesets and classic branch protection, by name and, when pinned, by its app, so a required context missing from the rollup counts as not reported, never passing. It ends with `CI_VERDICT=GREEN|RED|INCOMPLETE|RED-ADVISORY` and a `REASON=` line. Flag anything but GREEN and continue: this skill doesn't fix CI. A push in step 2 starts a new run on a new head, and a check can turn red without any push, so step 6 re-runs the verdict, with `--head` again, against the final head: without `--head` a verdict on the old head reads as current.
 
 ### 2. Clean git history
 
@@ -100,11 +100,24 @@ If unaddressed comments exist, flag them and suggest running `/reviewkit:review`
 
 Check whether the PR adds any new tool, API, config option, or user-facing behavior. If so, verify the relevant docs (README, examples) are updated. Report any gap.
 
-### 6. Report
+### 6. Verify once more, then report
+
+A "finalized" claim goes stale the moment a bot comments or a check turns red after the last pass, so re-read every gate against the final head immediately before reporting:
+
+```bash
+gh pr view "$PR_NUMBER" --json headRefOid,baseRefName,mergeable,mergeStateStatus,isDraft
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-ci-verdict.sh" "$PR_NUMBER" --head "$(gh pr view "$PR_NUMBER" --json headRefOid -q '.headRefOid')"
+"${CLAUDE_PLUGIN_ROOT}/scripts/pr-comment-state.sh" "$PR_NUMBER" --full
+```
+
+- The head must equal local `HEAD`; a different SHA means someone pushed since, so restart from step 1.
+- Re-run the full comment sweep, not only the CI verdict: a comment that landed after step 4 is unaddressed until read.
+- Any gap — a moved head or base, a merge conflict or blocked merge state, a draft flag, a verdict other than GREEN, a new unaddressed comment — is fixed or listed in the report. Never present a ready-to-merge link while any gate is unresolved.
 
 ```text
 PR #{pr_number} finalized:
 - Git history: N commits (squashed / kept as-is)
+- Merge state: {mergeStateStatus}, draft: {isDraft} (base {base})
 - CI: {CI_VERDICT} — {REASON} (head {sha})
 - Comments: {addressed} addressed, {open} need attention, {bot} bot noise
 - Doc gaps: {list or "none"}

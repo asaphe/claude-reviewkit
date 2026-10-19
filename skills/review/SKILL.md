@@ -237,6 +237,11 @@ After both agents return:
 5. No silent dismissals — every dropped finding must appear in the final "dropped for override" list with its confidence level.
 6. Every agent returned a `review_coverage` result for all four dimensions. A missing one is a coverage gap: re-dispatch for it, or report the review as incomplete. Never report it as clean.
 7. On a re-review, every prior finding carries exactly one status from step 3b, and every inventory item from step 3 carries a disposition.
+8. Value gate — a verified finding still has to be worth the author's time:
+   - Fold findings that share one root cause into that root finding, listing the other sites inside it.
+   - Drop a finding whose fix changes no behavior, unless the project's stated standard requires it.
+   - Never post as the author's defect something they did at the reviewer's own earlier suggestion; if the suggestion was wrong, say so as yours.
+   - Report the folded and dropped counts beside the kept count, so the reduction is visible rather than silent.
 
 ### 6. Adversarial pass (mandatory)
 
@@ -253,6 +258,8 @@ When the author disputes a finding, the reply is a claim from an interested part
 - **The check was wrong** → withdraw it explicitly and say what you got wrong.
 
 Withdrawing a finding because the author sounded confident, without re-running anything, is the failure this step exists to prevent. A finding downgraded with no new evidence is a finding you never verified in the first place.
+
+The PR body gets the same treatment. "Tested", "CI green", "no consumer", "no behavior change" are claims from the same interested party: re-verify each against the reviewed head before the review relies on it, and report one that doesn't hold as a finding.
 
 ### 7. Present findings
 
@@ -283,7 +290,7 @@ Correctness/security: {finding | clear | n/a} · Naming/organization: … · Sim
 {each with source, finding text, verification command/result, confidence}
 
 ---
-**Summary:** X BLOCKING, Y ISSUE, Z SUGGESTION across N files
+**Summary:** X BLOCKING, Y ISSUE, Z SUGGESTION across N files (F folded, D dropped by the value gate)
 ```
 
 Ask the user: "Post these findings to the PR? You can remove or edit items first."
@@ -292,6 +299,7 @@ Ask the user: "Post these findings to the PR? You can remove or edit items first
 
 - Re-read the head first: `gh pr view "$PR_NUMBER" --repo "$REPO" --json headRefOid -q '.headRefOid'`. If it moved past the head you reviewed, the findings and the CI verdict describe a commit that is no longer the PR. Re-run steps 3a and 3b before posting anything.
 - Get the latest commit SHA: `gh pr view "$PR_NUMBER" --repo "$REPO" --json commits --jq '.commits[-1].oid'`
+- Audit the exact text before it posts. Every posted sentence is a claim, and write-up time is where unverified claims enter: counts, doc paraphrases ("the doc says…"), qualifiers ("strict", "every", "never"), timings, reachability, and who must act. Before posting a review body, inline comment, reply or edit, dispatch a fresh-context checker — a subagent given only the exact text and the PR head, never your conclusions — to audit it sentence by sentence against the reviewed head and live state. Apply its corrections before posting. Another bot agreeing with the text is not verification.
 - Post each finding as an inline comment via `gh api POST /repos/{owner}/{repo}/pulls/{number}/comments` using `path`, `line`, `body`, `commit_id`, `side: "RIGHT"` — never the `position` parameter, which counts from the diff hunk and easily lands on removed code.
 **Choosing the review state — it is a merge authorization, not a tone.**
 
